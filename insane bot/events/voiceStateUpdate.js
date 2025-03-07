@@ -6,9 +6,9 @@ const {
   ButtonStyle, 
   ActionRowBuilder,
   TextInputBuilder,
-  TextInputStyle,
-  getVoiceConnection
-} = require('discord.js');
+  TextInputStyle} = require('discord.js');
+  const { getVoiceConnection } = require('@discordjs/voice');
+
 const logger = require('../utils/logger');
 
 const createdChannels = new Map(); // Key: vc.id, Value: { ownerId, textChannelId, triggerChannelId?, vcId }
@@ -121,11 +121,11 @@ module.exports = {
           const nextNumber = existingChannels.length ? Math.max(...existingChannels) + 1 : 1;
           channelName = `${triggerChannel.name} ${nextNumber}`;
           textChannelName = `${channelName}-control`;
-          userLimit = trigger.userLimit !== undefined ? trigger.userLimit : 2; // Use stored limit or default to 2
+          userLimit = 2;
         } else {
           channelName = `${user.displayName}'s Channel`;
           textChannelName = `${user.displayName}-control`;
-          userLimit = trigger.userLimit !== undefined ? trigger.userLimit : 10; // Use stored limit or default to 10
+          userLimit = 10;
         }
 
         const vc = await guild.channels.create({
