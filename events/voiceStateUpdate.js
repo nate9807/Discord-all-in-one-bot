@@ -121,11 +121,11 @@ module.exports = {
           const nextNumber = existingChannels.length ? Math.max(...existingChannels) + 1 : 1;
           channelName = `${triggerChannel.name} ${nextNumber}`;
           textChannelName = `${channelName}-control`;
-          userLimit = 2;
+          userLimit = trigger.userLimit !== undefined ? trigger.userLimit : 2; // Use stored limit or default to 2
         } else {
           channelName = `${user.displayName}'s Channel`;
           textChannelName = `${user.displayName}-control`;
-          userLimit = 10;
+          userLimit = trigger.userLimit !== undefined ? trigger.userLimit : 10; // Use stored limit or default to 10
         }
 
         const vc = await guild.channels.create({
