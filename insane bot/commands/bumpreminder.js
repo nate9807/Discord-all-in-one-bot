@@ -15,18 +15,11 @@ module.exports = {
       subcommand
         .setName('add')
         .setDescription('Add a bump reminder for specified roles')
-        .addRoleOption(option => // Required option first
+        .addRoleOption(option =>
           option
             .setName('role1')
             .setDescription('First role to ping')
             .setRequired(true)
-        )
-        .addIntegerOption(option => // Optional options follow
-          option
-            .setName('interval')
-            .setDescription('Interval in minutes (minimum 1, default 120)')
-            .setRequired(false)
-            .setMinValue(1)
         )
         .addRoleOption(option =>
           option
@@ -89,8 +82,6 @@ module.exports = {
           return interaction.editReply({ content: 'A bump reminder already exists for this server! Use `/bumpreminder setroles` to update roles.' });
         }
 
-        const intervalMinutes = interaction.options.getInteger('interval') || 120; // Default to 120 minutes (2 hours)
-        const interval = intervalMinutes * 60 * 1000;
         const role1 = interaction.options.getRole('role1');
         const role2 = interaction.options.getRole('role2');
         const role3 = interaction.options.getRole('role3');
@@ -98,10 +89,8 @@ module.exports = {
         if (role2) roles.push(role2.id);
         if (role3) roles.push(role3.id);
 
-        const startTime = new Date();
         reminders[guildId] = {
-          startTime: startTime.toISOString(),
-          interval: interval,
+          interval: DEFAULT_INTERVAL,
           lastSent: null,
           active: true,
           channelId: channelId,
@@ -109,12 +98,11 @@ module.exports = {
         };
 
         await saveReminders(reminders);
-        await scheduleNextReminder(guildId, client, startTime);
 
         const embed = new EmbedBuilder()
           .setColor('#00FFFF')
           .setTitle('Bump Reminder Added')
-          .setDescription(`Roles ${roles.map(id => `<@&${id}>`).join(', ')} will be pinged in this channel every ${intervalMinutes} minutes`)
+          .setDescription(`Roles ${roles.map(id => `<@&${id}>`).join(', ')} will be pinged in this channel 2 hours after each Disboard bump`)
           .setTimestamp();
         await interaction.editReply({ embeds: [embed] });
 
@@ -144,23 +132,16 @@ module.exports = {
           embed.setDescription('No active bump reminder');
         } else {
           const now = Date.now();
-          const startTime = new Date(reminder.startTime).getTime();
           const lastSent = reminder.lastSent ? new Date(reminder.lastSent).getTime() : null;
-          let nextTime;
+          const nextTime = lastSent ? lastSent + reminder.interval : null;
 
-          if (!lastSent) {
-            nextTime = startTime + reminder.interval;
-          } else {
-            nextTime = lastSent + reminder.interval;
-          }
-
-          const timeUntilNext = nextTime - now;
-          const nextReminderText = formatTimeUntil(timeUntilNext); // New function to format time
+          const timeUntilNext = nextTime ? nextTime - now : null;
+          const nextReminderText = timeUntilNext ? formatTimeUntil(timeUntilNext) : 'Waiting for first Disboard bump';
           const lastBump = lastSent ? new Date(lastSent).toLocaleString() : 'None';
 
           embed.setDescription(
             `Active: ${reminder.active}\n` +
-            `Last Reminder: ${lastBump}\n` +
+            `Last Bump: ${lastBump}\n` +
             `Next Reminder: ${nextReminderText}\n` +
             `Interval: ${reminder.interval / 60000} minutes\n` +
             `Channel: <#${reminder.channelId}>\n` +
@@ -201,7 +182,6 @@ module.exports = {
   },
 };
 
-// New function to format time until next reminder
 function formatTimeUntil(milliseconds) {
   if (milliseconds <= 0) return 'Now';
 
@@ -294,8 +274,8 @@ async function sendReminder(guildId, client) {
       .setTitle('Bump Reminder')
       .setDescription(
         rolesToPing.length > 0 
-          ? `${rolesToPing.map(id => `<@&${id}>`).join(' ')} Time to bump the server! Use \`/bump\` command`
-          : 'Time to bump the server! Use `/bump` command (no roles specified)'
+          ? `${rolesToPing.map(id => `<@&${id}>`).join(' ')} Time to bump the server! Use the Disboard /bump command`
+          : 'Time to bump the server! Use the Disboard /bump command (no roles specified)'
       )
       .setTimestamp();
 
@@ -310,24 +290,23 @@ async function sendReminder(guildId, client) {
   }
 }
 
-async function scheduleNextReminder(guildId, client, startTime) {
+async function scheduleNextReminder(guildId, client, startTime, fromBump = false) {
   try {
     const reminders = await loadReminders();
     const reminder = reminders[guildId];
     if (!reminder || !reminder.active) return;
 
     const now = Date.now();
-    const baseTime = startTime ? new Date(startTime).getTime() : new Date(reminder.startTime).getTime();
     const lastSent = reminder.lastSent ? new Date(reminder.lastSent).getTime() : null;
-    let nextTime;
-
-    if (!lastSent) {
-      nextTime = baseTime + reminder.interval;
-    } else {
-      nextTime = lastSent + reminder.interval;
+    
+    if (!lastSent && !fromBump) {
+      logger.info(`No bump recorded yet for guild ${guildId}, waiting for Disboard bump`);
+      return;
     }
 
+    const nextTime = lastSent + reminder.interval;
     const delay = Math.max(0, nextTime - now);
+    
     logger.info(`Scheduling next reminder for guild ${guildId} in ${delay / 1000 / 60} minutes (at ${new Date(nextTime).toLocaleString()})`);
     
     setTimeout(() => sendReminder(guildId, client), delay);
@@ -344,15 +323,10 @@ async function checkReminders(client) {
     for (const [guildId, reminder] of Object.entries(reminders)) {
       if (!reminder.active) continue;
 
-      const startTime = new Date(reminder.startTime).getTime();
       const lastSent = reminder.lastSent ? new Date(reminder.lastSent).getTime() : null;
-      let nextTime;
+      if (!lastSent) continue;
 
-      if (!lastSent) {
-        nextTime = startTime + reminder.interval;
-      } else {
-        nextTime = lastSent + reminder.interval;
-      }
+      const nextTime = lastSent + reminder.interval;
 
       if (nextTime <= now) {
         logger.info(`Triggering overdue reminder for guild ${guildId} (nextTime: ${new Date(nextTime).toLocaleString()})`);
@@ -367,3 +341,7 @@ async function checkReminders(client) {
 }
 
 module.exports.checkReminders = checkReminders;
+module.exports.loadReminders = loadReminders;
+module.exports.saveReminders = saveReminders;
+module.exports.sendReminder = sendReminder;
+module.exports.scheduleNextReminder = scheduleNextReminder;

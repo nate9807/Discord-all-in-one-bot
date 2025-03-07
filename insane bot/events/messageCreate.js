@@ -1,15 +1,36 @@
 const { EmbedBuilder, PermissionFlagsBits } = require('discord.js');
 const logger = require('../utils/logger');
+const { sendReminder, scheduleNextReminder, loadReminders, saveReminders } = require('../commands/bumpreminder');
+
+// Known Disboard bot ID
+const DISBOARD_BOT_ID = '302050872383242240'; // Disboard's bot ID - verify in your server
 
 module.exports = {
   name: 'messageCreate',
   async execute(message, client) {
-    // Log every message to console
     logger.info(`Message received: "${message.content}" from ${message.author.tag} (${message.author.id}) in ${message.guild ? message.channel.name : 'DM'} at ${new Date().toISOString()}`);
 
-    // Existing filtering logic
-    if (message.author.bot || !message.guild) return;
+    if (!message.guild) return;
 
+    // Detect Disboard bump confirmation
+    if (message.author.bot && message.author.id === DISBOARD_BOT_ID && 
+        message.content.includes('Bump done! Check it out on DISBOARD.')) {
+      try {
+        const guildId = message.guild.id;
+        const reminders = await loadReminders();
+        
+        if (reminders[guildId] && reminders[guildId].active) {
+          reminders[guildId].lastSent = new Date().toISOString();
+          await saveReminders(reminders);
+          await scheduleNextReminder(guildId, client, null, true);
+          logger.info(`Detected Disboard bump confirmation in guild ${guildId}, reset reminder timer`);
+        }
+      } catch (error) {
+        logger.error('Error handling Disboard bump detection:', error.message || error);
+      }
+    }
+
+    if (message.author.bot) return; // Skip further processing for bot messages
 
     const guildId = message.guild.id;
     const automodConfig = client.settings.get(`${guildId}:automod`) || {
@@ -36,18 +57,15 @@ module.exports = {
       lastMessages: new Map()
     };
 
-    // Initialize user data
     const userTimestamps = client.automodData.timestamps.get(userId) || [];
     const userViolations = client.automodData.violations.get(userId) || { count: 0, lastReset: now, types: {} };
     const lastMessage = client.automodData.lastMessages.get(userId) || { content: '', timestamp: 0 };
 
-    // Update timestamps
     userTimestamps.push(now);
-    const timeWindow = 1000; // 1 second window
+    const timeWindow = 1000;
     const filteredTimestamps = userTimestamps.filter(ts => now - ts < timeWindow);
     client.automodData.timestamps.set(userId, filteredTimestamps);
 
-    // Violation handling function
     const handleViolation = async (type, reason) => {
       if (now - userViolations.lastReset > automodConfig.thresholds.violationResetTime) {
         userViolations.count = 0;
@@ -66,7 +84,6 @@ module.exports = {
         4: { action: 'Kicked', execute: () => message.member.kickable ? message.member.kick(reason) : Promise.resolve() },
         5: { action: 'Banned', execute: () => message.member.bannable ? message.member.ban({ reason }) : Promise.resolve() }
       };
-
 
       const actionKey = userViolations.count > 5 ? 5 : userViolations.count;
       const { action, execute } = actions[actionKey] || actions[5];
@@ -91,7 +108,6 @@ module.exports = {
       await this.logViolation(client, message, type, action, userViolations, reason);
     };
 
-    // Spam Protection
     if (automodConfig.spamProtection) {
       const messagesPerSecond = filteredTimestamps.length;
       const isRepeated = message.content === lastMessage.content && (now - lastMessage.timestamp < automodConfig.thresholds.repeatedMessageTime);
@@ -105,7 +121,6 @@ module.exports = {
       }
     }
 
-    // Content Filter
     if (automodConfig.contentFilter) {
       const badWords = client.settings.get(`${guildId}:badwords`) || [];
       if (badWords.some(word => message.content.toLowerCase().includes(word.toLowerCase()))) {
@@ -114,7 +129,6 @@ module.exports = {
       }
     }
 
-    // Caps Protection
     if (automodConfig.capsProtection) {
       const letters = message.content.match(/[a-zA-Z]/g) || [];
       const caps = message.content.match(/[A-Z]/g) || [];
@@ -124,7 +138,6 @@ module.exports = {
       }
     }
 
-    // Invite Protection
     if (automodConfig.inviteProtection) {
       const inviteRegex = /(?:https?:\/\/)?(?:www\.)?(?:discord\.(?:gg|com|io|me|li)|discordapp\.com)\/(?:invite\/)?([a-zA-Z0-9-]{2,32})/i;
       if (inviteRegex.test(message.content) && !message.member.permissions.has(PermissionFlagsBits.ManageGuild)) {
@@ -133,7 +146,6 @@ module.exports = {
       }
     }
 
-    // Update last message
     client.automodData.lastMessages.set(userId, { content: message.content, timestamp: now });
   },
 
