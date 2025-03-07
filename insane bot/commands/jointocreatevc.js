@@ -39,6 +39,24 @@ module.exports = {
       subcommand
         .setName('list')
         .setDescription('List all current Join-to-Create trigger channels.')
+    )
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName('set-limit')
+        .setDescription('Set the default user limit for a Join-to-Create trigger channel.')
+        .addChannelOption(option =>
+          option.setName('channel')
+            .setDescription('The trigger voice channel to modify')
+            .setRequired(true)
+        )
+        .addIntegerOption(option =>
+          option
+            .setName('limit')
+            .setDescription('User limit (0-99, 0 = no limit)')
+            .setRequired(true)
+            .setMinValue(0)
+            .setMaxValue(99)
+        )
     ),
   category: 'Voice Channels',
   cooldown: 10,
@@ -67,7 +85,7 @@ module.exports = {
           return interaction.editReply({ content: `${channel} is already a Join-to-Create trigger!` });
         }
 
-        triggerChannels.push({ channelId: channel.id, mode });
+        triggerChannels.push({ channelId: channel.id, mode, userLimit: mode === 'sequential' ? 2 : 10 });
         client.settings.set(`${interaction.guild.id}:jointocreate`, triggerChannels);
         logger.info(`Added Join-to-Create trigger ${channel.name} (ID: ${channel.id}) with mode ${mode} for guild ${interaction.guild.id}`);
 
@@ -75,7 +93,7 @@ module.exports = {
           .setTitle('Join-to-Create VC Added')
           .setDescription(
             `Added ${channel} as a Join-to-Create trigger with **${mode}** mode.\n` +
-            `Join it to test!\nCurrent triggers: ${triggerChannels.map(tc => `<#${tc.channelId}> (${tc.mode})`).join(', ') || 'None'}`
+            `Join it to test!\nCurrent triggers: ${triggerChannels.map(tc => `<#${tc.channelId}> (${tc.mode}, limit: ${tc.userLimit})`).join(', ') || 'None'}`
           )
           .setColor('#00FF00')
           .setTimestamp();
@@ -98,7 +116,7 @@ module.exports = {
           .setTitle('Join-to-Create VC Removed')
           .setDescription(
             `Removed ${channel} from Join-to-Create triggers.\n` +
-            `Current triggers: ${triggerChannels.length ? triggerChannels.map(tc => `<#${tc.channelId}> (${tc.mode})`).join(', ') : 'None'}`
+            `Current triggers: ${triggerChannels.length ? triggerChannels.map(tc => `<#${tc.channelId}> (${tc.mode}, limit: ${tc.userLimit})`).join(', ') : 'None'}`
           )
           .setColor('#FF4444')
           .setTimestamp();
@@ -107,9 +125,35 @@ module.exports = {
         const embed = new EmbedBuilder()
           .setTitle('Join-to-Create VC Triggers')
           .setDescription(
-            `Current triggers: ${triggerChannels.length ? triggerChannels.map(tc => `<#${tc.channelId}> (${tc.mode})`).join(', ') : 'None'}`
+            `Current triggers: ${triggerChannels.length ? triggerChannels.map(tc => `<#${tc.channelId}> (${tc.mode}, limit: ${tc.userLimit})`).join(', ') : 'None'}`
           )
           .setColor('#00FFFF')
+          .setTimestamp();
+        await interaction.editReply({ embeds: [embed] });
+      } else if (subcommand === 'set-limit') {
+        const channel = interaction.options.getChannel('channel');
+        const newLimit = interaction.options.getInteger('limit');
+
+        if (channel.type !== ChannelType.GuildVoice) {
+          return interaction.editReply({ content: 'Please select a voice channel!' });
+        }
+
+        const triggerIndex = triggerChannels.findIndex(tc => tc.channelId === channel.id);
+        if (triggerIndex === -1) {
+          return interaction.editReply({ content: `${channel} is not a Join-to-Create trigger!` });
+        }
+
+        triggerChannels[triggerIndex].userLimit = newLimit;
+        client.settings.set(`${interaction.guild.id}:jointocreate`, triggerChannels);
+        logger.info(`Set user limit to ${newLimit} for trigger ${channel.name} (ID: ${channel.id}) in guild ${interaction.guild.id}`);
+
+        const embed = new EmbedBuilder()
+          .setTitle('Join-to-Create VC Limit Updated')
+          .setDescription(
+            `Updated user limit for ${channel} to **${newLimit === 0 ? 'no limit' : newLimit}**.\n` +
+            `Current triggers: ${triggerChannels.map(tc => `<#${tc.channelId}> (${tc.mode}, limit: ${tc.userLimit})`).join(', ') || 'None'}`
+          )
+          .setColor('#FFD700')
           .setTimestamp();
         await interaction.editReply({ embeds: [embed] });
       }
