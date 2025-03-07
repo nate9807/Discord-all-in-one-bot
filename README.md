@@ -74,6 +74,7 @@ node bot.js
 
 #### ⚠️ Work in Progress
 This bot is actively developed—expect occasional bugs or incomplete features. Report issues or suggest features via our [Discord server](https://discord.gg/vyJYYan52Z)!
+or you can add me! janessahellamean
 
 ### 🌟 Why Choose InsaneDCBot?
 ✅ Free access to premium-level tools.  
