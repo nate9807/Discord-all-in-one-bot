@@ -50,9 +50,8 @@ InsaneDCBot packs features similar to premium bots like **Bleed**, **MEE6**, **J
 1. **Install Dependencies**  
    ```bash
    npm install
-sudo apt install certbot
+   sudo apt install certbot
    node bot.js
-
 
 ⚠️ Work in Progress
 This bot is actively being developed, so expect occasional bugs. Found an issue? Let us know!
