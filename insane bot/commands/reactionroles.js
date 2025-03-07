@@ -7,7 +7,7 @@ module.exports = {
   data: new SlashCommandBuilder()
     .setName('reactionroles')
     .setDescription('Create a reaction role message with a dropdown menu.')
-    // Required options first
+    // Required options (4 total)
     .addChannelOption(option =>
       option.setName('channel')
         .setDescription('The channel to send the reaction role message to')
@@ -25,7 +25,7 @@ module.exports = {
       option.setName('role1')
         .setDescription('First role to include in the dropdown')
         .setRequired(true))
-    // Optional options after required ones
+    // Optional options (20 total, bringing total to 24)
     .addStringOption(option =>
       option.setName('color')
         .setDescription('Embed color in hex (e.g., #FF0000) (optional)')
@@ -110,22 +110,6 @@ module.exports = {
       option.setName('role21')
         .setDescription('Twenty-first role to include in the dropdown (optional)')
         .setRequired(false))
-    .addRoleOption(option =>
-      option.setName('role22')
-        .setDescription('Twenty-second role to include in the dropdown (optional)')
-        .setRequired(false))
-    .addRoleOption(option =>
-      option.setName('role23')
-        .setDescription('Twenty-third role to include in the dropdown (optional)')
-        .setRequired(false))
-    .addRoleOption(option =>
-      option.setName('role24')
-        .setDescription('Twenty-fourth role to include in the dropdown (optional)')
-        .setRequired(false))
-    .addRoleOption(option =>
-      option.setName('role25')
-        .setDescription('Twenty-fifth role to include in the dropdown (optional)')
-        .setRequired(false))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
 
   cooldown: 10,
@@ -145,9 +129,9 @@ module.exports = {
     const description = interaction.options.getString('description');
     const color = interaction.options.getString('color');
 
-    // Collect selected roles (up to 25)
+    // Collect selected roles (up to 21)
     const roles = [];
-    for (let i = 1; i <= 25; i++) {
+    for (let i = 1; i <= 21; i++) {
       const role = interaction.options.getRole(`role${i}`);
       if (role) roles.push(role);
     }
