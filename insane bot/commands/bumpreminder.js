@@ -16,55 +16,33 @@ module.exports = {
         .setName('add')
         .setDescription('Add a bump reminder for specified roles')
         .addRoleOption(option =>
-          option
-            .setName('role1')
-            .setDescription('First role to ping')
-            .setRequired(true)
+          option.setName('role1').setDescription('First role to ping').setRequired(true)
         )
         .addRoleOption(option =>
-          option
-            .setName('role2')
-            .setDescription('Second role to ping (optional)')
-            .setRequired(false)
+          option.setName('role2').setDescription('Second role to ping (optional)').setRequired(false)
         )
         .addRoleOption(option =>
-          option
-            .setName('role3')
-            .setDescription('Third role to ping (optional)')
-            .setRequired(false)
+          option.setName('role3').setDescription('Third role to ping (optional)').setRequired(false)
         )
     )
     .addSubcommand(subcommand =>
-      subcommand
-        .setName('remove')
-        .setDescription('Remove the bump reminder')
+      subcommand.setName('remove').setDescription('Remove the bump reminder')
     )
     .addSubcommand(subcommand =>
-      subcommand
-        .setName('status')
-        .setDescription('Check current reminder status')
+      subcommand.setName('status').setDescription('Check current reminder status')
     )
     .addSubcommand(subcommand =>
       subcommand
         .setName('setroles')
         .setDescription('Update the roles to ping for the reminder')
         .addRoleOption(option =>
-          option
-            .setName('role1')
-            .setDescription('First role to ping')
-            .setRequired(true)
+          option.setName('role1').setDescription('First role to ping').setRequired(true)
         )
         .addRoleOption(option =>
-          option
-            .setName('role2')
-            .setDescription('Second role to ping (optional)')
-            .setRequired(false)
+          option.setName('role2').setDescription('Second role to ping (optional)').setRequired(false)
         )
         .addRoleOption(option =>
-          option
-            .setName('role3')
-            .setDescription('Third role to ping (optional)')
-            .setRequired(false)
+          option.setName('role3').setDescription('Third role to ping (optional)').setRequired(false)
         )
     ),
   cooldown: 5,
@@ -79,7 +57,7 @@ module.exports = {
 
       if (subcommand === 'add') {
         if (reminders[guildId]) {
-          return interaction.editReply({ content: 'A bump reminder already exists for this server! Use `/bumpreminder setroles` to update roles.' });
+          return interaction.editReply({ content: 'A bump reminder already exists! Use `/bumpreminder setroles` to update roles.' });
         }
 
         const role1 = interaction.options.getRole('role1');
@@ -153,7 +131,7 @@ module.exports = {
 
       } else if (subcommand === 'setroles') {
         if (!reminders[guildId]) {
-          return interaction.editReply({ content: 'No bump reminder exists for this server! Use `/bumpreminder add` first.' });
+          return interaction.editReply({ content: 'No bump reminder exists! Use `/bumpreminder add` first.' });
         }
 
         const role1 = interaction.options.getRole('role1');
@@ -175,9 +153,7 @@ module.exports = {
       }
     } catch (error) {
       logger.error('Bumpreminder command error:', error.message || error);
-      await interaction.editReply({
-        content: `Error: ${error.message || 'Unknown error'}`
-      });
+      await interaction.editReply({ content: `Error: ${error.message || 'Unknown error'}` });
     }
   },
 };
@@ -273,7 +249,7 @@ async function sendReminder(guildId, client) {
       .setColor('#00FFFF')
       .setTitle('Bump Reminder')
       .setDescription(
-        rolesToPing.length > 0 
+        rolesToPing.length > 0
           ? `${rolesToPing.map(id => `<@&${id}>`).join(' ')} Time to bump the server! Use the Disboard /bump command`
           : 'Time to bump the server! Use the Disboard /bump command (no roles specified)'
       )
@@ -298,7 +274,7 @@ async function scheduleNextReminder(guildId, client, startTime, fromBump = false
 
     const now = Date.now();
     const lastSent = reminder.lastSent ? new Date(reminder.lastSent).getTime() : null;
-    
+
     if (!lastSent && !fromBump) {
       logger.info(`No bump recorded yet for guild ${guildId}, waiting for Disboard bump`);
       return;
@@ -306,9 +282,9 @@ async function scheduleNextReminder(guildId, client, startTime, fromBump = false
 
     const nextTime = lastSent + reminder.interval;
     const delay = Math.max(0, nextTime - now);
-    
+
     logger.info(`Scheduling next reminder for guild ${guildId} in ${delay / 1000 / 60} minutes (at ${new Date(nextTime).toLocaleString()})`);
-    
+
     setTimeout(() => sendReminder(guildId, client), delay);
   } catch (error) {
     logger.error(`Failed to schedule reminder for guild ${guildId}:`, error.message || error);

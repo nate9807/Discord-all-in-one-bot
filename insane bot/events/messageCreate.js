@@ -2,8 +2,7 @@ const { EmbedBuilder, PermissionFlagsBits } = require('discord.js');
 const logger = require('../utils/logger');
 const { sendReminder, scheduleNextReminder, loadReminders, saveReminders } = require('../commands/bumpreminder');
 
-// Known Disboard bot ID
-const DISBOARD_BOT_ID = '302050872383242240'; // Disboard's bot ID - verify in your server
+const DISBOARD_BOT_ID = '302050872383242240'; // Disboard's bot ID
 
 module.exports = {
   name: 'messageCreate',
@@ -13,21 +12,49 @@ module.exports = {
     if (!message.guild) return;
 
     // Detect Disboard bump confirmation
-    if (message.author.bot && message.author.id === DISBOARD_BOT_ID && 
-        message.content.includes('Bump done! Check it out on DISBOARD.')) {
-      try {
-        const guildId = message.guild.id;
-        const reminders = await loadReminders();
-        
-        if (reminders[guildId] && reminders[guildId].active) {
-          reminders[guildId].lastSent = new Date().toISOString();
-          await saveReminders(reminders);
-          await scheduleNextReminder(guildId, client, null, true);
-          logger.info(`Detected Disboard bump confirmation in guild ${guildId}, reset reminder timer`);
+    if (message.author.bot && message.author.id === DISBOARD_BOT_ID) {
+      logger.info(`Disboard message detected - Embeds available: ${message.embeds.length > 0}`);
+      if (message.embeds.length > 0) {
+        const embed = message.embeds[0];
+        logger.info('Disboard embed raw data:', {
+          description: embed.description,
+          title: embed.title,
+          fields: embed.fields,
+          footer: embed.footer,
+        });
+        const hasBumpEmbed = embed.description && /Bump done!/i.test(embed.description);
+
+        if (hasBumpEmbed) {
+          try {
+            const guildId = message.guild.id;
+            const channelId = message.channel.id;
+            const reminders = await loadReminders();
+
+            if (!reminders[guildId]) {
+              logger.info(`Bump detected in ${guildId}, but no reminder configured yet`);
+              return; // Skip if no reminder is set up
+            }
+
+            if (reminders[guildId].active) {
+              reminders[guildId].lastSent = new Date().toISOString();
+              reminders[guildId].channelId = channelId; // Update channel if changed
+              await saveReminders(reminders);
+              await scheduleNextReminder(guildId, client, null, true);
+              logger.info(`Detected "Bump done!" in guild ${guildId}, reset reminder timer`);
+            } else {
+              logger.info(`Bump detected in ${guildId}, but reminders not active`);
+            }
+          } catch (error) {
+            logger.error('Error handling Disboard bump detection:', error.stack);
+            message.channel.send('Error processing bump. Check logs.').catch(() => {});
+          }
+        } else {
+          logger.warn(`Disboard embed found but no "Bump done!" in description: ${embed.description || 'No description'}`);
         }
-      } catch (error) {
-        logger.error('Error handling Disboard bump detection:', error.message || error);
+      } else {
+        logger.warn('No embeds found in Disboard message');
       }
+      return; // Exit early for Disboard messages
     }
 
     if (message.author.bot) return; // Skip further processing for bot messages
@@ -161,7 +188,7 @@ module.exports = {
       .setDescription(`**User:** ${message.author.tag} (${message.author.id})\n**Action:** ${action}\n**Total Violations:** ${violations.count}`)
       .addFields(
         { name: 'Reason', value: reason, inline: false },
-        { name: 'Message Content', value: message.content.slice(0, 1000) || 'N/A', inline: false },
+        { name: 'Message Content', value: description || 'N/A', inline: false },
         { name: 'Channel', value: `<#${message.channel.id}>`, inline: true },
         { name: 'Timestamp', value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: true },
         { name: 'Violation Breakdown', value: Object.entries(violations.types).map(([t, c]) => `${t}: ${c}`).join('\n') || 'N/A', inline: false }
