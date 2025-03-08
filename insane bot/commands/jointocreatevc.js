@@ -85,9 +85,10 @@ module.exports = {
           return interaction.editReply({ content: `${channel} is already a Join-to-Create trigger!` });
         }
 
-        triggerChannels.push({ channelId: channel.id, mode, userLimit: mode === 'sequential' ? 2 : 10 });
+        const memberCount = channel.members.size;
+        triggerChannels.push({ channelId: channel.id, mode, userLimit: mode === 'sequential' ? 10 : 10 });
         client.settings.set(`${interaction.guild.id}:jointocreate`, triggerChannels);
-        logger.info(`Added Join-to-Create trigger ${channel.name} (ID: ${channel.id}) with mode ${mode} for guild ${interaction.guild.id}`);
+        logger.info(`Added Join-to-Create trigger ${channel.name} (ID: ${channel.id}) with mode ${mode} for guild ${interaction.guild.id}. Current users: ${memberCount}`);
 
         const embed = new EmbedBuilder()
           .setTitle('Join-to-Create VC Added')
@@ -108,9 +109,10 @@ module.exports = {
           return interaction.editReply({ content: `${channel} is not a Join-to-Create trigger!` });
         }
 
+        const memberCount = channel.members.size;
         triggerChannels = triggerChannels.filter(tc => tc.channelId !== channel.id);
         client.settings.set(`${interaction.guild.id}:jointocreate`, triggerChannels);
-        logger.info(`Removed Join-to-Create trigger ${channel.name} (ID: ${channel.id}) from guild ${interaction.guild.id}`);
+        logger.info(`Removed Join-to-Create trigger ${channel.name} (ID: ${channel.id}) from guild ${interaction.guild.id}. Users before removal: ${memberCount}`);
 
         const embed = new EmbedBuilder()
           .setTitle('Join-to-Create VC Removed')
@@ -143,14 +145,16 @@ module.exports = {
           return interaction.editReply({ content: `${channel} is not a Join-to-Create trigger!` });
         }
 
+        const memberCount = channel.members.size;
+        const oldLimit = triggerChannels[triggerIndex].userLimit;
         triggerChannels[triggerIndex].userLimit = newLimit;
         client.settings.set(`${interaction.guild.id}:jointocreate`, triggerChannels);
-        logger.info(`Set user limit to ${newLimit} for trigger ${channel.name} (ID: ${channel.id}) in guild ${interaction.guild.id}`);
+        logger.info(`Set user limit for trigger ${channel.name} (ID: ${channel.id}) in guild ${interaction.guild.id} from ${oldLimit} to ${newLimit}. Current users: ${memberCount}`);
 
         const embed = new EmbedBuilder()
           .setTitle('Join-to-Create VC Limit Updated')
           .setDescription(
-            `Updated user limit for ${channel} to **${newLimit === 0 ? 'no limit' : newLimit}**.\n` +
+            `Updated user limit for ${channel} from ${oldLimit} to **${newLimit === 0 ? 'no limit' : newLimit}**.\n` +
             `Current triggers: ${triggerChannels.map(tc => `<#${tc.channelId}> (${tc.mode}, limit: ${tc.userLimit})`).join(', ') || 'None'}`
           )
           .setColor('#FFD700')

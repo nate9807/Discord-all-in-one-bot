@@ -24,7 +24,12 @@ if (!process.env.WEB_PORT) {
     process.env.WEB_PORT = '3000';
 }
 
-// Shard code with updated settings file path
+if (!process.env.ABSOLUTE_SETTINGS_PATH) {
+    logger.error('ABSOLUTE_SETTINGS_PATH not set in .env. Please set the path to settings.json.');
+    process.exit(1);
+}
+
+// Shard code with explicit destroy for restart
 const shardCode = `
 const { Client, GatewayIntentBits, Collection, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus } = require('@discordjs/voice');
@@ -54,19 +59,20 @@ client.cooldowns = new Collection();
 client.spamTracker = new Map();
 client.queues = new Map();
 
-// Updated settings file path to /data/settings.json
-const settingsFile = path.join(__dirname, 'data', 'settings.json');
+const settingsFile = process.env.ABSOLUTE_SETTINGS_PATH;
 if (fs.existsSync(settingsFile)) {
   const settingsData = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
   for (const [key, value] of Object.entries(settingsData)) {
     client.settings.set(key, value);
   }
-  logger.info('Loaded settings from data/settings.json');
+  logger.info(\`Loaded settings from \${settingsFile}\`);
+} else {
+  logger.warn(\`Settings file not found at \${settingsFile}, starting with empty settings\`);
 }
 
 function saveSettings() {
   fs.writeFileSync(settingsFile, JSON.stringify(Object.fromEntries(client.settings), null, 2));
-  logger.info('Saved settings to data/settings.json');
+  logger.info(\`Saved settings to \${settingsFile}\`);
 }
 
 const commandFiles = fs.readdirSync('./commands').filter(file => file.endsWith('.js'));
@@ -235,7 +241,6 @@ client.on('shardDisconnect', (event) => {
   logger.error(chalk.red(\`Shard \${client.shard.ids[0]} disconnected: \${event.code} - \${event.reason}\`));
 });
 
-// Updated serverStats helper functions
 async function getAccurateMemberCounts(guild, client) {
   let totalMembers = guild.memberCount;
   let humans = 0;
@@ -383,7 +388,7 @@ async function updateShardFile() {
 
 // Register commands globally with deduplication
 async function registerCommands() {
-    const commands = new Map(); // Use Map to ensure unique command names
+    const commands = new Map();
     const commandFiles = await fs.readdir(path.join(__dirname, 'commands'));
     const commandFilesFiltered = commandFiles.filter(file => file.endsWith('.js'));
 
@@ -436,21 +441,50 @@ manager.on('shardCreate', shard => {
     shard.on('disconnect', () => logger.warn(chalk.yellow(`Shard ${shard.id} disconnected`)));
 });
 
+// Optional: Keep the message handler for debugging
+manager.on('message', (shard, message) => {
+    logger.info(`Received message from shard ${shard.id}: ${JSON.stringify(message)}`);
+    if (message && message.type === 'restart') {
+        logger.info(chalk.yellow(`Received restart command from shard ${shard.id}, initiating full restart...`));
+        manager.shards.forEach(s => {
+            logger.info(`Respawning shard ${s.id}...`);
+            s.respawn();
+        });
+    }
+});
+
 // Pass the manager to the dashboard
 dashboard.start(manager);
 
 // Start the bot and register commands
 async function startBot() {
-    await updateShardFile(); // Update shard file
-    await registerCommands(); // Register commands before spawning shards
-    await manager.spawn()
-        .then(shards => {
+    await updateShardFile();
+    await registerCommands();
+    
+    const spawnShards = async () => {
+        try {
+            const shards = await manager.spawn();
             logger.info(chalk.green(`All ${shards.size} shards spawned successfully.`));
-        })
-        .catch(err => {
+        } catch (err) {
             logger.error('Failed to spawn shards:', err);
             process.exit(1);
-        });
+        }
+    };
+
+    await spawnShards();
+
+    // Handle process signals for clean shutdowns
+    process.on('SIGINT', async () => {
+        logger.info('Received SIGINT, shutting down gracefully...');
+        await manager.broadcastEval(c => c.destroy());
+        process.exit(0);
+    });
+
+    process.on('SIGTERM', async () => {
+        logger.info('Received SIGTERM, shutting down gracefully...');
+        await manager.broadcastEval(c => c.destroy());
+        process.exit(0);
+    });
 }
 
 // Run the bot
