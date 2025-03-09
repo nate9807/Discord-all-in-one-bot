@@ -6,12 +6,402 @@ const {
   ButtonStyle, 
   ActionRowBuilder,
   TextInputBuilder,
-  TextInputStyle} = require('discord.js');
+  TextInputStyle,
+  Modal} = require('discord.js');
 const { getVoiceConnection } = require('@discordjs/voice');
 
 const logger = require('../utils/logger');
 
-const createdChannels = new Map(); // Key: vc.id, Value: { ownerId, textChannelId, triggerChannelId?, vcId }
+// Store created channels in client settings instead of memory
+const getCreatedChannels = (client, guildId) => {
+  const key = `${guildId}:jtc_channels`;
+  const data = client.settings.get(key) || {};
+  return new Map(Object.entries(data));
+};
+
+const saveCreatedChannels = (client, guildId, channels) => {
+  const key = `${guildId}:jtc_channels`;
+  const data = Object.fromEntries(channels);
+  client.settings.set(key, data);
+  // Force save to file
+  if (client.saveSettings && typeof client.saveSettings === 'function') {
+    client.saveSettings();
+  }
+};
+
+const getChannelLimit = (client, channelId) => {
+  const key = `vc:${channelId}:limit`;
+  return client.settings.get(key);
+};
+
+const setChannelLimit = (client, channelId, limit) => {
+  const key = `vc:${channelId}:limit`;
+  client.settings.set(key, limit);
+};
+
+// Create control panel message
+const createControlPanel = async (textChannel, member) => {
+  const embed = new EmbedBuilder()
+    .setTitle('🎙️ Voice Channel Controls')
+    .setDescription('Manage your personal voice channel with style!')
+    .setColor('#00BFFF')
+    .setThumbnail(textChannel.client.user.displayAvatarURL())
+    .addFields(
+      {
+        name: '🔧 General Controls',
+        value: '🔒 **Lock Channel**: Prevent others from joining\n🔓 **Unlock Channel**: Allow others to join\n📛 **Rename Channel**: Change the channel name\n👥 **Set User Limit**: Set maximum users (0-99)\n🎚️ **Set Bitrate**: Adjust audio quality (8-96kbps)',
+        inline: true,
+      },
+      {
+        name: '✨ Extra Features',
+        value: '👤 **Invite User**: Add a specific user\n🎮 **Activity Mode**: Enable Discord Activities',
+        inline: true,
+      },
+      {
+        name: '🛡️ Moderation (Admin Only)',
+        value: '🔇 **Mute All**: Mute all users\n🔊 **Unmute All**: Unmute all users\n👢 **Kick User**: Kick and ban a user from rejoining\n👁️ **Hide Channel**: Toggle visibility for @everyone\n🗑️ **Delete Channel**: Remove the channel',
+        inline: false,
+      }
+    )
+    .setFooter({ text: `Owner: ${member.displayName} | Powered by Bot Boi`, iconURL: member.displayAvatarURL() })
+    .setTimestamp();
+
+  const buttons = [
+    new ButtonBuilder().setCustomId('vc_lock').setEmoji('🔒').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('vc_unlock').setEmoji('🔓').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('vc_name').setEmoji('📛').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('vc_limit').setEmoji('👥').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('vc_bitrate').setEmoji('🎚️').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('vc_invite').setEmoji('👤').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('vc_activity').setEmoji('🎮').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('vc_muteall').setEmoji('🔇').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('vc_unmuteall').setEmoji('🔊').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('vc_kick').setEmoji('👢').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('vc_hide').setEmoji('👁️').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('vc_delete').setEmoji('🗑️').setStyle(ButtonStyle.Secondary),
+  ];
+
+  const actionRows = [];
+  for (let i = 0; i < buttons.length; i += 4) {
+    const row = new ActionRowBuilder().addComponents(buttons.slice(i, i + 4));
+    actionRows.push(row);
+  }
+
+  return await textChannel.send({ embeds: [embed], components: actionRows });
+};
+
+// Handle button interactions - moved outside the event handler
+const handleInteraction = async (interaction, client) => {
+  if (!interaction.isButton() && !interaction.isModalSubmit()) return;
+  if (!interaction.member?.voice?.channel) return;
+
+  const guild = interaction.guild;
+  const guildId = guild.id;
+  const createdChannels = getCreatedChannels(client, guildId);
+  const channelData = createdChannels.get(interaction.member.voice.channelId);
+
+  if (!channelData && !interaction.customId.startsWith('vc_')) return;
+
+  try {
+    switch (interaction.customId) {
+      case 'vc_limit':
+        const modal = new Modal()
+          .setCustomId('limit_modal')
+          .setTitle('Set User Limit');
+
+        const limitInput = new TextInputBuilder()
+          .setCustomId('limit_input')
+          .setLabel('Enter user limit (0 for unlimited)')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMinLength(1)
+          .setMaxLength(2);
+
+        const actionRow = new ActionRowBuilder().addComponents(limitInput);
+        modal.addComponents(actionRow);
+
+        await interaction.showModal(modal);
+        break;
+
+      case 'limit_modal':
+        if (!interaction.isModalSubmit()) return;
+        const limit = parseInt(interaction.fields.getTextInputValue('limit_input'));
+
+        if (isNaN(limit) || limit < 0 || limit > 99) {
+          await interaction.reply({ content: 'Please enter a valid number between 0 and 99.', ephemeral: true });
+          return;
+        }
+
+        const voiceChannel = interaction.member.voice.channel;
+        await voiceChannel.setUserLimit(limit);
+        setChannelLimit(client, voiceChannel.id, limit);
+        await interaction.reply({ 
+          embeds: [new EmbedBuilder().setDescription(`✅ Limit set to **${limit === 0 ? 'no limit' : `${limit} users`}**!`).setColor('#00FF00')], 
+          ephemeral: true 
+        });
+        break;
+
+      case 'vc_lock':
+        await interaction.member.voice.channel.permissionOverwrites.edit(guild.id, {
+          Connect: false
+        });
+        await interaction.reply({ 
+          embeds: [new EmbedBuilder().setDescription('🔒 Channel locked!').setColor('#FF4500')], 
+          ephemeral: true 
+        });
+        break;
+
+      case 'vc_unlock':
+        await interaction.member.voice.channel.permissionOverwrites.edit(guild.id, {
+          Connect: true
+        });
+        await interaction.reply({ 
+          embeds: [new EmbedBuilder().setDescription('🔓 Channel unlocked!').setColor('#00FF00')], 
+          ephemeral: true 
+        });
+        break;
+
+      case 'vc_name':
+        const nameModal = new Modal()
+          .setCustomId('name_modal')
+          .setTitle('Rename Channel');
+
+        const nameInput = new TextInputBuilder()
+          .setCustomId('name_input')
+          .setLabel('Enter new channel name')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMinLength(1)
+          .setMaxLength(32);
+
+        const nameRow = new ActionRowBuilder().addComponents(nameInput);
+        nameModal.addComponents(nameRow);
+
+        await interaction.showModal(nameModal);
+        break;
+
+      case 'name_modal':
+        if (!interaction.isModalSubmit()) return;
+        const newName = interaction.fields.getTextInputValue('name_input');
+        await interaction.member.voice.channel.setName(newName);
+        await interaction.reply({ 
+          embeds: [new EmbedBuilder().setDescription(`✅ Renamed to **${newName}**!`).setColor('#00FF00')], 
+          ephemeral: true 
+        });
+        break;
+
+      case 'vc_bitrate':
+        const bitrateModal = new Modal()
+          .setCustomId('bitrate_modal')
+          .setTitle('Set Bitrate');
+
+        const bitrateInput = new TextInputBuilder()
+          .setCustomId('bitrate_input')
+          .setLabel('Enter bitrate (8-96 kbps)')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMinLength(1)
+          .setMaxLength(2);
+
+        const bitrateRow = new ActionRowBuilder().addComponents(bitrateInput);
+        bitrateModal.addComponents(bitrateRow);
+
+        await interaction.showModal(bitrateModal);
+        break;
+
+      case 'bitrate_modal':
+        if (!interaction.isModalSubmit()) return;
+        const bitrate = Math.min(96, Math.max(8, parseInt(interaction.fields.getTextInputValue('bitrate_input')) || 8)) * 1000;
+        await interaction.member.voice.channel.setBitrate(bitrate);
+        await interaction.reply({ 
+          embeds: [new EmbedBuilder().setDescription(`✅ Bitrate set to **${bitrate/1000}kbps**!`).setColor('#00FF00')], 
+          ephemeral: true 
+        });
+        break;
+
+      case 'vc_invite':
+        const inviteModal = new Modal()
+          .setCustomId('invite_modal')
+          .setTitle('Invite User');
+
+        const inviteInput = new TextInputBuilder()
+          .setCustomId('invite_input')
+          .setLabel('User Mention or ID')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMinLength(1)
+          .setMaxLength(32);
+
+        const inviteRow = new ActionRowBuilder().addComponents(inviteInput);
+        inviteModal.addComponents(inviteRow);
+
+        await interaction.showModal(inviteModal);
+        break;
+
+      case 'invite_modal':
+        if (!interaction.isModalSubmit()) return;
+        const input = interaction.fields.getTextInputValue('invite_input');
+        const target = interaction.mentions.members.first() || guild.members.cache.get(input.replace(/[<>@!]/g, ''));
+        
+        if (!target) {
+          await interaction.reply({ 
+            embeds: [new EmbedBuilder().setDescription('❌ Invalid user!').setColor('#FF4500')], 
+            ephemeral: true 
+          });
+          return;
+        }
+
+        await interaction.member.voice.channel.permissionOverwrites.edit(target.id, {
+          Connect: true,
+          ViewChannel: true
+        });
+
+        await interaction.reply({ 
+          embeds: [new EmbedBuilder().setDescription(`✅ Invited **${target.displayName}**!`).setColor('#00FF00')], 
+          ephemeral: true 
+        });
+        break;
+
+      case 'vc_activity':
+        await interaction.member.voice.channel.setRTCRegion('us-east');
+        await interaction.reply({ 
+          embeds: [new EmbedBuilder().setDescription('🎮 Activity mode enabled!\nStart an activity from the voice channel menu.').setColor('#00FF00')], 
+          ephemeral: true 
+        });
+        break;
+
+      case 'vc_muteall':
+        if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+          await interaction.reply({ 
+            embeds: [new EmbedBuilder().setDescription('❌ You need Administrator permissions to use this button!').setColor('#FF0000')], 
+            ephemeral: true 
+          });
+          return;
+        }
+
+        for (const [, member] of interaction.member.voice.channel.members) {
+          if (member.id !== interaction.member.id) {
+            await member.voice.setMute(true).catch(() => {});
+          }
+        }
+
+        await interaction.reply({ 
+          embeds: [new EmbedBuilder().setDescription('🔇 All users muted!').setColor('#FF4500')], 
+          ephemeral: true 
+        });
+        break;
+
+      case 'vc_unmuteall':
+        if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+          await interaction.reply({ 
+            embeds: [new EmbedBuilder().setDescription('❌ You need Administrator permissions to use this button!').setColor('#FF0000')], 
+            ephemeral: true 
+          });
+          return;
+        }
+
+        for (const [, member] of interaction.member.voice.channel.members) {
+          await member.voice.setMute(false).catch(() => {});
+        }
+
+        await interaction.reply({ 
+          embeds: [new EmbedBuilder().setDescription('🔊 All users unmuted!').setColor('#00FF00')], 
+          ephemeral: true 
+        });
+        break;
+
+      case 'vc_kick':
+        const kickModal = new Modal()
+          .setCustomId('kick_modal')
+          .setTitle('Kick User');
+
+        const kickInput = new TextInputBuilder()
+          .setCustomId('kick_input')
+          .setLabel('User Mention or ID')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMinLength(1)
+          .setMaxLength(32);
+
+        const kickRow = new ActionRowBuilder().addComponents(kickInput);
+        kickModal.addComponents(kickRow);
+
+        await interaction.showModal(kickModal);
+        break;
+
+      case 'kick_modal':
+        if (!interaction.isModalSubmit()) return;
+        const kickTarget = interaction.mentions.members.first() || 
+          guild.members.cache.get(interaction.fields.getTextInputValue('kick_input').replace(/[<>@!]/g, ''));
+
+        if (!kickTarget) {
+          await interaction.reply({ 
+            embeds: [new EmbedBuilder().setDescription('❌ Invalid user!').setColor('#FF4500')], 
+            ephemeral: true 
+          });
+          return;
+        }
+
+        if (kickTarget.id === channelData.ownerId && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+          await interaction.reply({ 
+            embeds: [new EmbedBuilder().setDescription('❌ You cannot kick the channel owner!').setColor('#FF4500')], 
+            ephemeral: true 
+          });
+          return;
+        }
+
+        if (interaction.member.voice.channel.members.has(kickTarget.id)) {
+          await kickTarget.voice.disconnect();
+        }
+
+        await interaction.member.voice.channel.permissionOverwrites.edit(kickTarget.id, {
+          Connect: false,
+          ViewChannel: false
+        });
+
+        await interaction.reply({ 
+          embeds: [new EmbedBuilder().setDescription(`👢 Kicked **${kickTarget.displayName}** and banned from rejoining!`).setColor('#FF4500')], 
+          ephemeral: true 
+        });
+        break;
+
+      case 'vc_hide':
+        const currentVisibility = interaction.member.voice.channel.permissionsFor(guild.id).has(PermissionFlagsBits.ViewChannel);
+        await interaction.member.voice.channel.permissionOverwrites.edit(guild.id, {
+          ViewChannel: !currentVisibility
+        });
+
+        await interaction.reply({ 
+          embeds: [new EmbedBuilder()
+            .setDescription(currentVisibility ? '👁️ Channel hidden from @everyone!' : '👁️ Channel made visible to @everyone!')
+            .setColor(currentVisibility ? '#FF4500' : '#00FF00')], 
+          ephemeral: true 
+        });
+        break;
+
+      case 'vc_delete':
+        const channel = interaction.member.voice.channel;
+        const textChannelId = channelData.textChannelId;
+        
+        await channel.delete();
+        
+        if (textChannelId) {
+          const textChannel = guild.channels.cache.get(textChannelId);
+          if (textChannel) await textChannel.delete();
+        }
+
+        createdChannels.delete(channel.id);
+        saveCreatedChannels(client, guildId, createdChannels);
+        break;
+    }
+  } catch (error) {
+    logger.error(`Error handling button interaction: ${error.message}`);
+    await interaction.reply({ 
+      embeds: [new EmbedBuilder().setDescription(`❌ Error: ${error.message}`).setColor('#FF0000')], 
+      ephemeral: true 
+    }).catch(() => {});
+  }
+};
 
 module.exports = {
   name: 'voiceStateUpdate',
@@ -19,7 +409,130 @@ module.exports = {
     const guild = newState.guild || oldState.guild;
     const guildId = guild.id;
     const member = newState.member || oldState.member;
-    logger.info(`Voice state update: User ${member.user.tag} in guild ${guildId}, channel ${newState.channelId || 'left'}`);
+
+    // Verify and fix settings if needed
+    const settingsFile = process.env.ABSOLUTE_SETTINGS_PATH;
+    try {
+      const data = await require('fs').promises.readFile(settingsFile, 'utf8');
+      const settings = JSON.parse(data);
+      
+      // Check if settings need to be reloaded
+      const currentSettings = client.settings.get(`${guildId}:jointocreate`);
+      const fileSettings = settings[`${guildId}:jointocreate`];
+      
+      if (!currentSettings && fileSettings) {
+        client.settings.set(`${guildId}:jointocreate`, fileSettings);
+      }
+    } catch (error) {
+      logger.error(`Error verifying settings: ${error.message}`);
+    }
+
+    // Register interaction handler once
+    if (!client.hasRegisteredJTCHandlers) {
+      client.hasRegisteredJTCHandlers = true;
+      client.on('interactionCreate', interaction => handleInteraction(interaction, client));
+    }
+
+    // Get created channels from settings
+    const createdChannels = getCreatedChannels(client, guildId);
+
+    // Check for join-to-create trigger
+    const triggerChannels = client.settings.get(`${guildId}:jointocreate`) || [];
+    const isTriggerChannel = triggerChannels.some(tc => tc.channelId === newState.channelId);
+
+    if (isTriggerChannel && newState.channel) {
+      try {
+        logger.info(`Creating JTC channel for ${member.user.tag} in ${newState.channel.name}`);
+        
+        // Get the trigger channel settings
+        const triggerChannel = triggerChannels.find(tc => tc.channelId === newState.channelId);
+        const channelName = triggerChannel.mode === 'sequential' 
+          ? `${newState.channel.name} ${createdChannels.size + 1}`
+          : `${member.user.username}'s Channel`;
+        
+        // Create new voice channel
+        const vc = await guild.channels.create({
+          name: channelName,
+          type: ChannelType.GuildVoice,
+          parent: newState.channel.parent,
+          userLimit: triggerChannel.userLimit || 0,
+          permissionOverwrites: [
+            {
+              id: member.id,
+              allow: [PermissionFlagsBits.ManageChannels, PermissionFlagsBits.PrioritySpeaker]
+            }
+          ]
+        });
+
+        // Create associated text channel
+        const textChannel = await guild.channels.create({
+          name: `${channelName.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
+          type: ChannelType.GuildText,
+          parent: newState.channel.parent,
+          permissionOverwrites: [
+            {
+              id: member.id,
+              allow: [PermissionFlagsBits.ManageChannels]
+            }
+          ]
+        });
+
+        // Move member to new channel
+        await member.voice.setChannel(vc);
+
+        // Store channel info
+        createdChannels.set(vc.id, {
+          ownerId: member.id,
+          textChannelId: textChannel.id,
+          triggerChannelId: newState.channelId,
+          vcId: vc.id,
+          mode: triggerChannel.mode,
+          userLimit: triggerChannel.userLimit
+        });
+        
+        // Save to settings
+        saveCreatedChannels(client, guildId, createdChannels);
+        logger.info(`Created JTC channel: ${vc.name} for ${member.user.tag}`);
+        
+        // Create control panel
+        await createControlPanel(textChannel, member);
+      } catch (error) {
+        logger.error(`Error creating voice channel: ${error.message}`);
+      }
+    }
+
+    // Handle channel deletion
+    if (oldState.channel) {
+      const channelData = createdChannels.get(oldState.channelId);
+      if (channelData && oldState.channel.members.size === 0) {
+        try {
+          // Delete the associated text channel first
+          if (channelData.textChannelId) {
+            const textChannel = await guild.channels.fetch(channelData.textChannelId).catch(() => null);
+            if (textChannel) {
+              await textChannel.delete();
+            }
+          }
+
+          // Delete the voice channel
+          const voiceChannel = await guild.channels.fetch(channelData.vcId).catch(() => null);
+          if (voiceChannel) {
+            await voiceChannel.delete();
+          }
+
+          // Remove from tracking and save
+          createdChannels.delete(channelData.vcId);
+          saveCreatedChannels(client, guildId, createdChannels);
+          logger.info(`Deleted empty JTC channel: ${oldState.channel.name}`);
+
+        } catch (error) {
+          logger.error(`Error deleting empty channel: ${error.message}`);
+          // Still try to remove from tracking even if deletion fails
+          createdChannels.delete(channelData.vcId);
+          saveCreatedChannels(client, guildId, createdChannels);
+        }
+      }
+    }
 
     // Log voice state changes to modlog
     const modlogChannelId = client.settings.get(`${guildId}:modlog`);
@@ -48,23 +561,14 @@ module.exports = {
         if (action) {
           const embed = new EmbedBuilder()
             .setTitle(action)
-            .setDescription(description)
             .setColor(color)
-            .addFields(
-              { name: 'User', value: `${member.user.tag} (${member.id})`, inline: true },
-              { name: 'Time', value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: true }
-            )
+            .setDescription(description)
             .setTimestamp();
-
-          try {
-            await modlogChannel.send({ embeds: [embed] });
-            logger.info(`Logged ${action} for ${member.user.tag} in guild ${guildId}`);
-          } catch (err) {
-            logger.error(`Failed to log ${action} to modlog channel ${modlogChannelId}: ${err.message}`);
-          }
+          
+          await modlogChannel.send({ embeds: [embed] }).catch(error => {
+            logger.error(`Error sending to modlog: ${error.message}`);
+          });
         }
-      } else {
-        logger.warn(`Modlog channel ${modlogChannelId} not found or not text-based in guild ${guildId}`);
       }
     }
 
@@ -107,417 +611,6 @@ module.exports = {
     } catch (error) {
       // Log error but don't crash the whole event
       logger.error(`Error in music player voice state handling: ${error.message}`);
-    }
-
-    // Join-to-Create logic
-    const triggerChannels = client.settings.get(`${guildId}:jointocreate`) || [];
-    const trigger = triggerChannels.find(tc => tc.channelId === newState.channelId);
-    if (trigger && (!oldState.channelId || oldState.channelId !== newState.channelId)) {
-      try {
-        const user = newState.member;
-        const triggerChannel = newState.channel;
-        const category = triggerChannel?.parent;
-
-        if (!guild.members.me.permissions.has(PermissionFlagsBits.ManageChannels)) {
-          logger.error('Missing ManageChannels permission for Join-to-Create.');
-          return;
-        }
-
-        let channelName, textChannelName, userLimit;
-        if (trigger.mode === 'sequential') {
-          const existingChannels = Array.from(createdChannels.values())
-            .filter(ch => ch.triggerChannelId === triggerChannel.id)
-            .map(ch => guild.channels.cache.get(ch.vcId)?.name)
-            .filter(name => name && name.startsWith(triggerChannel.name))
-            .map(name => {
-              const match = name.match(/\d+$/);
-              return match ? parseInt(match[0]) : 0;
-            });
-
-          const nextNumber = existingChannels.length ? Math.max(...existingChannels) + 1 : 1;
-          channelName = `${triggerChannel.name} ${nextNumber}`;
-          textChannelName = `${channelName}-control`;
-          userLimit = 10;
-        } else {
-          channelName = `${user.displayName}'s Channel`;
-          textChannelName = `${user.displayName}-control`;
-          userLimit = 10;
-        }
-
-        const vc = await guild.channels.create({
-          name: channelName,
-          type: ChannelType.GuildVoice,
-          parent: category,
-          userLimit: userLimit,
-          permissionOverwrites: [
-            { id: guild.id, allow: [PermissionFlagsBits.Connect] },
-            { id: user.id, allow: [PermissionFlagsBits.ManageChannels] },
-          ],
-        });
-
-        const textChannel = await guild.channels.create({
-          name: textChannelName,
-          type: ChannelType.GuildText,
-          parent: category,
-          permissionOverwrites: [
-            { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-            { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ManageChannels] },
-          ],
-        });
-
-        createdChannels.set(vc.id, {
-          ownerId: user.id,
-          textChannelId: textChannel.id,
-          ...(trigger.mode === 'sequential' ? { triggerChannelId: triggerChannel.id, vcId: vc.id } : {}),
-        });
-
-        await user.voice.setChannel(vc).catch(err => {
-          logger.error('Failed to move user to new VC:', err.message);
-          throw new Error(`Could not move user: ${err.message}`);
-        });
-
-        const invitedUsers = new Set();
-
-        const embed = new EmbedBuilder()
-          .setTitle('🎙️ Voice Channel Controls')
-          .setDescription('Manage your personal voice channel with style!')
-          .setColor('#00BFFF')
-          .setThumbnail(client.user.displayAvatarURL())
-          .addFields(
-            {
-              name: '🔧 General Controls',
-              value: '🔒 **Lock Channel**: Prevent others from joining\n🔓 **Unlock Channel**: Allow others to join\n📛 **Rename Channel**: Change the channel name\n👥 **Set User Limit**: Set maximum users (0-99)\n🎚️ **Set Bitrate**: Adjust audio quality (8-96kbps)',
-              inline: true,
-            },
-            {
-              name: '✨ Extra Features',
-              value: '👤 **Invite User**: Add a specific user\n🎮 **Activity Mode**: Enable Discord Activities',
-              inline: true,
-            },
-            {
-              name: '🛡️ Moderation (Admin Only)',
-              value: '🔇 **Mute All**: Mute all users\n🔊 **Unmute All**: Unmute all users\n👢 **Kick User**: Kick and ban a user from rejoining\n👁️ **Hide Channel**: Toggle visibility for @everyone\n🗑️ **Delete Channel**: Remove the channel',
-              inline: false,
-            }
-          )
-          .setFooter({ text: `Owner: ${user.displayName} | Powered by Bot Boi`, iconURL: user.displayAvatarURL() })
-          .setTimestamp();
-
-        const buttons = [
-          new ButtonBuilder().setCustomId('lock_channel').setEmoji('🔒').setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder().setCustomId('unlock_channel').setEmoji('🔓').setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder().setCustomId('rename_channel').setEmoji('📛').setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder().setCustomId('set_limit').setEmoji('👥').setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder().setCustomId('set_bitrate').setEmoji('🎚️').setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder().setCustomId('invite_user').setEmoji('👤').setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder().setCustomId('activity_mode').setEmoji('🎮').setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder().setCustomId('mute_all').setEmoji('🔇').setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder().setCustomId('unmute_all').setEmoji('🔊').setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder().setCustomId('kick_user').setEmoji('👢').setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder().setCustomId('hide_channel').setEmoji('👁️').setStyle(ButtonStyle.Secondary),
-          new ButtonBuilder().setCustomId('delete_channel').setEmoji('🗑️').setStyle(ButtonStyle.Secondary),
-        ];
-
-        const actionRows = [];
-        for (let i = 0; i < buttons.length; i += 4) {
-          const row = new ActionRowBuilder().addComponents(buttons.slice(i, i + 4));
-          actionRows.push(row);
-        }
-
-        const msg = await textChannel.send({ embeds: [embed], components: actionRows });
-
-        const filter = (interaction) => 
-          (interaction.user.id === user.id || interaction.member.permissions.has(PermissionFlagsBits.Administrator)) && 
-          interaction.message.id === msg.id;
-        const collector = msg.createMessageComponentCollector({ filter, time: 0 });
-
-        collector.on('collect', async (interaction) => {
-          try {
-            if (!interaction.isButton()) return;
-
-            const customId = interaction.customId;
-            if (!customId) {
-              logger.error('Interaction missing customId');
-              await interaction.reply({ 
-                embeds: [new EmbedBuilder().setDescription('❌ Error: Button interaction missing identifier.').setColor('#FF0000')], 
-                ephemeral: true 
-              });
-              return;
-            }
-
-            const isAdmin = interaction.member.permissions.has(PermissionFlagsBits.Administrator);
-            if ((customId === 'mute_all' || customId === 'unmute_all') && !isAdmin) {
-              await interaction.reply({ 
-                embeds: [new EmbedBuilder().setDescription('❌ You need Administrator permissions to use this button!').setColor('#FF0000')], 
-                ephemeral: true 
-              });
-              return;
-            }
-
-            switch (customId) {
-              case 'lock_channel':
-                await vc.permissionOverwrites.edit(guild.id, { [PermissionFlagsBits.Connect]: false });
-                await interaction.reply({ 
-                  embeds: [new EmbedBuilder().setDescription('🔒 Channel locked!').setColor('#FF4500')], 
-                  ephemeral: true 
-                });
-                break;
-              case 'unlock_channel':
-                await vc.permissionOverwrites.edit(guild.id, { [PermissionFlagsBits.Connect]: true });
-                await interaction.reply({ 
-                  embeds: [new EmbedBuilder().setDescription('🔓 Channel unlocked!').setColor('#00FF00')], 
-                  ephemeral: true 
-                });
-                break;
-              case 'rename_channel':
-                await interaction.showModal({
-                  title: 'Rename Channel',
-                  customId: 'rename_channel_modal',
-                  components: [
-                    new ActionRowBuilder().addComponents(
-                      new TextInputBuilder()
-                        .setCustomId('new_channel_name')
-                        .setLabel('New Channel Name')
-                        .setStyle(TextInputStyle.Short)
-                        .setMaxLength(100)
-                        .setRequired(true)
-                    )
-                  ]
-                });
-                break;
-              case 'set_limit':
-                await interaction.showModal({
-                  title: 'Set User Limit',
-                  customId: 'set_limit_modal',
-                  components: [
-                    new ActionRowBuilder().addComponents(
-                      new TextInputBuilder()
-                        .setCustomId('user_limit')
-                        .setLabel('User Limit (0-99, 0 = no limit)')
-                        .setStyle(TextInputStyle.Short)
-                        .setMaxLength(2)
-                        .setRequired(true)
-                    )
-                  ]
-                });
-                break;
-              case 'set_bitrate':
-                await interaction.showModal({
-                  title: 'Set Bitrate',
-                  customId: 'set_bitrate_modal',
-                  components: [
-                    new ActionRowBuilder().addComponents(
-                      new TextInputBuilder()
-                        .setCustomId('bitrate')
-                        .setLabel('Bitrate (8-96kbps)')
-                        .setStyle(TextInputStyle.Short)
-                        .setMaxLength(2)
-                        .setRequired(true)
-                    )
-                  ]
-                });
-                break;
-              case 'invite_user':
-                await interaction.showModal({
-                  title: 'Invite User',
-                  customId: 'invite_user_modal',
-                  components: [
-                    new ActionRowBuilder().addComponents(
-                      new TextInputBuilder()
-                        .setCustomId('user_id')
-                        .setLabel('User Mention or ID')
-                        .setStyle(TextInputStyle.Short)
-                        .setMaxLength(50)
-                        .setRequired(true)
-                    )
-                  ]
-                });
-                break;
-              case 'activity_mode':
-                await vc.setRTCRegion('us-east');
-                await interaction.reply({ 
-                  embeds: [new EmbedBuilder().setDescription('🎮 Activity mode enabled!\nStart an activity from the voice channel menu.').setColor('#00FF00')], 
-                  ephemeral: true 
-                });
-                break;
-              case 'mute_all':
-                for (const member of vc.members.values()) {
-                  if (member.id !== user.id) {
-                    await member.voice.setMute(true, 'Muted by channel owner (Mute All)');
-                  }
-                }
-                await interaction.reply({ 
-                  embeds: [new EmbedBuilder().setDescription('🔇 All users muted!').setColor('#FF4500')], 
-                  ephemeral: true 
-                });
-                break;
-              case 'unmute_all':
-                for (const member of vc.members.values()) {
-                  await member.voice.setMute(false, 'Unmuted by channel owner (Unmute All)');
-                }
-                await interaction.reply({ 
-                  embeds: [new EmbedBuilder().setDescription('🔊 All users unmuted!').setColor('#00FF00')], 
-                  ephemeral: true 
-                });
-                break;
-              case 'kick_user':
-                await interaction.showModal({
-                  title: 'Kick User',
-                  customId: 'kick_user_modal',
-                  components: [
-                    new ActionRowBuilder().addComponents(
-                      new TextInputBuilder()
-                        .setCustomId('user_id')
-                        .setLabel('User Mention or ID')
-                        .setStyle(TextInputStyle.Short)
-                        .setMaxLength(50)
-                        .setRequired(true)
-                    )
-                  ]
-                });
-                break;
-              case 'hide_channel':
-                const currentVisibility = vc.permissionsFor(guild.id).has(PermissionFlagsBits.ViewChannel);
-                await vc.permissionOverwrites.edit(guild.id, { 
-                  [PermissionFlagsBits.ViewChannel]: !currentVisibility 
-                });
-                await interaction.reply({ 
-                  embeds: [new EmbedBuilder()
-                    .setDescription(currentVisibility ? '👁️ Channel hidden from @everyone!' : '👁️ Channel made visible to @everyone!')
-                    .setColor(currentVisibility ? '#FF4500' : '#00FF00')], 
-                  ephemeral: true 
-                });
-                break;
-              case 'delete_channel':
-                await vc.delete();
-                await textChannel.delete();
-                createdChannels.delete(vc.id);
-                collector.stop();
-                return;
-            }
-          } catch (err) {
-            logger.error(`Button control error for ${interaction.customId || 'unknown'}: ${err.message}`);
-            await interaction.reply({ 
-              embeds: [new EmbedBuilder().setDescription(`❌ Error: ${err.message}`).setColor('#FF0000')], 
-              ephemeral: true 
-            });
-          }
-        });
-
-        client.on('interactionCreate', async (modalInteraction) => {
-          if (!modalInteraction.isModalSubmit()) return;
-          if (modalInteraction.user.id !== user.id && !modalInteraction.member.permissions.has(PermissionFlagsBits.Administrator)) return;
-
-          const { customId } = modalInteraction;
-          const textChannelData = createdChannels.get(vc.id);
-          if (!textChannelData || modalInteraction.channel.id !== textChannelData.textChannelId) return;
-
-          try {
-            switch (customId) {
-              case 'rename_channel_modal':
-                const newName = modalInteraction.fields.getTextInputValue('new_channel_name').slice(0, 100);
-                await vc.setName(newName);
-                await modalInteraction.reply({ 
-                  embeds: [new EmbedBuilder().setDescription(`✅ Renamed to **${newName}**!`).setColor('#00FF00')], 
-                  ephemeral: true 
-                });
-                break;
-              case 'set_limit_modal':
-                const limit = Math.min(99, Math.max(0, parseInt(modalInteraction.fields.getTextInputValue('user_limit')) || 0));
-                await vc.setUserLimit(limit);
-                await modalInteraction.reply({ 
-                  embeds: [new EmbedBuilder().setDescription(`✅ Limit set to **${limit === 0 ? 'no limit' : `${limit} users`}**!`).setColor('#00FF00')], 
-                  ephemeral: true 
-                });
-                break;
-              case 'set_bitrate_modal':
-                const bitrate = Math.min(96, Math.max(8, parseInt(modalInteraction.fields.getTextInputValue('bitrate')) || 8)) * 1000;
-                await vc.setBitrate(bitrate);
-                await modalInteraction.reply({ 
-                  embeds: [new EmbedBuilder().setDescription(`✅ Bitrate set to **${bitrate/1000}kbps**!`).setColor('#00FF00')], 
-                  ephemeral: true 
-                });
-                break;
-              case 'invite_user_modal':
-                const input = modalInteraction.fields.getTextInputValue('user_id');
-                const target = modalInteraction.mentions.members.first() || guild.members.cache.get(input.replace(/[<>@!]/g, ''));
-                if (!target) {
-                  await modalInteraction.reply({ 
-                    embeds: [new EmbedBuilder().setDescription('❌ Invalid user!').setColor('#FF4500')], 
-                    ephemeral: true 
-                  });
-                  return;
-                }
-                await vc.permissionOverwrites.edit(target.id, { [PermissionFlagsBits.Connect]: true, [PermissionFlagsBits.ViewChannel]: true });
-                await textChannel.permissionOverwrites.edit(target.id, { [PermissionFlagsBits.ViewChannel]: true });
-                invitedUsers.add(target.id);
-                await modalInteraction.reply({ 
-                  embeds: [new EmbedBuilder().setDescription(`✅ Invited **${target.displayName}**!`).setColor('#00FF00')], 
-                  ephemeral: true 
-                });
-                break;
-              case 'kick_user_modal':
-                const kickInput = modalInteraction.fields.getTextInputValue('user_id');
-                const kickTarget = modalInteraction.mentions.members.first() || guild.members.cache.get(kickInput.replace(/[<>@!]/g, ''));
-                if (!kickTarget) {
-                  await modalInteraction.reply({ 
-                    embeds: [new EmbedBuilder().setDescription('❌ Invalid user!').setColor('#FF4500')], 
-                    ephemeral: true 
-                  });
-                  return;
-                }
-                if (kickTarget.id === user.id && !isAdmin) {
-                  await modalInteraction.reply({ 
-                    embeds: [new EmbedBuilder().setDescription('❌ You cannot kick yourself unless you are an admin!').setColor('#FF4500')], 
-                    ephemeral: true 
-                  });
-                  return;
-                }
-                if (vc.members.has(kickTarget.id)) {
-                  await kickTarget.voice.setChannel(null, 'Kicked by channel owner or admin');
-                }
-                await vc.permissionOverwrites.edit(kickTarget.id, { 
-                  [PermissionFlagsBits.Connect]: false, 
-                  [PermissionFlagsBits.ViewChannel]: false 
-                });
-                await modalInteraction.reply({ 
-                  embeds: [new EmbedBuilder().setDescription(`👢 Kicked **${kickTarget.displayName}** and banned from rejoining!`).setColor('#FF4500')], 
-                  ephemeral: true 
-                });
-                break;
-            }
-          } catch (err) {
-            logger.error(`Modal control error for ${customId}: ${err.message}`);
-            await modalInteraction.reply({ 
-              embeds: [new EmbedBuilder().setDescription(`❌ Error: ${err.message}`).setColor('#FF0000')], 
-              ephemeral: true 
-            });
-          }
-        });
-
-        const checkEmpty = setInterval(async () => {
-          try {
-            if (!vc.members.size) {
-              await vc.delete().catch(() => {});
-              await textChannel.delete().catch(() => {});
-              createdChannels.delete(vc.id);
-              clearInterval(checkEmpty);
-              collector.stop();
-            }
-          } catch (err) {
-            logger.error('Auto-delete error:', err.message);
-            clearInterval(checkEmpty);
-            collector.stop();
-          }
-        }, 5000);
-
-      } catch (error) {
-        logger.error('Join-to-Create error:', error.message);
-        const textChannel = guild.channels.cache.find(ch => ch.name.includes('-control'));
-        if (textChannel) {
-          await textChannel.send({ content: `Failed to create/move to voice channel: ${error.message}` });
-        }
-      }
     }
   },
 };

@@ -88,6 +88,12 @@ module.exports = {
         const memberCount = channel.members.size;
         triggerChannels.push({ channelId: channel.id, mode, userLimit: mode === 'sequential' ? 10 : 10 });
         client.settings.set(`${interaction.guild.id}:jointocreate`, triggerChannels);
+        if (client.saveSettings) {
+          await client.saveSettings();
+          logger.info(`Saved join-to-create settings for guild ${interaction.guild.id}`);
+        } else {
+          logger.warn(`saveSettings not available for guild ${interaction.guild.id}`);
+        }
         logger.info(`Added Join-to-Create trigger ${channel.name} (ID: ${channel.id}) with mode ${mode} for guild ${interaction.guild.id}. Current users: ${memberCount}`);
 
         const embed = new EmbedBuilder()

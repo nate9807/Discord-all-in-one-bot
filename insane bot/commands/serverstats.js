@@ -51,7 +51,11 @@ const {
             option.setName('channel')
               .setDescription('Channel to stop renaming')
               .setRequired(true)
-              .addChannelTypes(ChannelType.GuildText))),
+              .addChannelTypes(ChannelType.GuildText)))
+      .addSubcommand(subcommand =>
+        subcommand
+          .setName('list')
+          .setDescription('List all stat channels in this server.')),
     cooldown: 10,
     async execute(interaction, client) {
       await interaction.deferReply({ ephemeral: true });
@@ -69,40 +73,89 @@ const {
       const settingsKey = `${interaction.guild.id}:serverstats`;
       let settings = client.settings.get(settingsKey) || {};
   
-      if (subcommand === 'add') {
-        const channel = interaction.options.getChannel('channel');
-        const stat = interaction.options.getString('stat');
-        const prefix = interaction.options.getString('prefix') || stat.charAt(0).toUpperCase() + stat.slice(1);
+      try {
+        if (subcommand === 'add') {
+          const channel = interaction.options.getChannel('channel');
+          const stat = interaction.options.getString('stat');
+          const prefix = interaction.options.getString('prefix') || stat.charAt(0).toUpperCase() + stat.slice(1);
   
-        if (!channel.permissionsFor(botMember).has(PermissionFlagsBits.ManageChannels)) {
-          return interaction.editReply({ content: `I need Manage Channels permission in ${channel}!` });
-        }
+          if (!channel.permissionsFor(botMember).has(PermissionFlagsBits.ManageChannels)) {
+            return interaction.editReply({ content: `I need Manage Channels permission in ${channel}!` });
+          }
   
-        settings[channel.id] = { stat, prefix };
-        client.settings.set(settingsKey, settings);
-  
-        await updateChannelName(channel, interaction.guild, stat, prefix, client);
-        logger.info(`Added stat channel ${channel.id} for ${stat} in guild ${interaction.guild.id}`);
-        await interaction.editReply({ content: `Set ${channel} to display ${stat}!` });
-      } else if (subcommand === 'remove') {
-        const channel = interaction.options.getChannel('channel');
-  
-        if (!settings[channel.id]) {
-          return interaction.editReply({ content: `${channel} is not set up as a stat channel!` });
-        }
-  
-        delete settings[channel.id];
-        if (Object.keys(settings).length === 0) {
-          client.settings.delete(settingsKey);
-        } else {
+          settings[channel.id] = { stat, prefix };
           client.settings.set(settingsKey, settings);
-        }
+          
+          // Save to settings.json
+          await client.saveSettings().catch(err => {
+            logger.error(`Failed to save settings for guild ${interaction.guild.id}: ${err.message}`);
+            throw new Error('Failed to save settings. Please try again.');
+          });
   
-        await channel.setName(channel.name.split(':')[0] || channel.name).catch(err => 
-          logger.error(`Failed to reset channel name ${channel.id}: ${err.message}`)
-        );
-        logger.info(`Removed stat channel ${channel.id} in guild ${interaction.guild.id}`);
-        await interaction.editReply({ content: `Removed stat display from ${channel}!` });
+          await updateChannelName(channel, interaction.guild, stat, prefix, client);
+          logger.info(`Added stat channel ${channel.id} for ${stat} in guild ${interaction.guild.id}`);
+          await interaction.editReply({ 
+            content: `✅ Successfully set ${channel} to display ${stat}!\n\nPrefix: ${prefix}\nChannel will update every 5 minutes or when relevant events occur.` 
+          });
+          
+        } else if (subcommand === 'remove') {
+          const channel = interaction.options.getChannel('channel');
+  
+          if (!settings[channel.id]) {
+            return interaction.editReply({ content: `❌ ${channel} is not set up as a stat channel!` });
+          }
+  
+          const oldStat = settings[channel.id].stat;
+          delete settings[channel.id];
+          
+          if (Object.keys(settings).length === 0) {
+            client.settings.delete(settingsKey);
+          } else {
+            client.settings.set(settingsKey, settings);
+          }
+  
+          // Save to settings.json
+          await client.saveSettings().catch(err => {
+            logger.error(`Failed to save settings for guild ${interaction.guild.id}: ${err.message}`);
+            throw new Error('Failed to save settings. Please try again.');
+          });
+  
+          await channel.setName(channel.name.split(':')[0] || channel.name).catch(err => {
+            logger.error(`Failed to reset channel name ${channel.id}: ${err.message}`);
+            throw new Error('Failed to reset channel name. Please check my permissions.');
+          });
+          
+          logger.info(`Removed stat channel ${channel.id} in guild ${interaction.guild.id}`);
+          await interaction.editReply({ 
+            content: `✅ Successfully removed ${oldStat} stat display from ${channel}!` 
+          });
+          
+        } else if (subcommand === 'list') {
+          if (Object.keys(settings).length === 0) {
+            return interaction.editReply({ content: '❌ No stat channels are currently set up in this server.' });
+          }
+  
+          const statsList = await Promise.all(Object.entries(settings).map(async ([channelId, { stat, prefix }]) => {
+            const channel = interaction.guild.channels.cache.get(channelId);
+            if (!channel) return null;
+            return `${channel} - **${stat}** (Prefix: ${prefix})`;
+          }));
+  
+          const validStats = statsList.filter(Boolean);
+          if (validStats.length === 0) {
+            return interaction.editReply({ content: '❌ No valid stat channels found. They may have been deleted.' });
+          }
+  
+          await interaction.editReply({ 
+            content: '📊 **Server Stats Channels**\n\n' + validStats.join('\n') 
+          });
+        }
+      } catch (error) {
+        logger.error(`Error in serverstats command for guild ${interaction.guild.id}:`, error);
+        await interaction.editReply({ 
+          content: `❌ An error occurred: ${error.message}`,
+          ephemeral: true 
+        });
       }
     },
     

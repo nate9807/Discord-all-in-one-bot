@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, Collection } = require('discord.js');
+const { Client, GatewayIntentBits, Collection, REST, Routes } = require('discord.js');
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus } = require('@discordjs/voice');
 const fs = require('fs');
 const fsPromises = require('fs').promises;
@@ -62,7 +62,7 @@ const handleNonFatalError = (error, context) => {
 };
 
 // Create the client with necessary intents
-const client = new Client({
+let client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
@@ -71,7 +71,24 @@ const client = new Client({
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMessageReactions,
         GatewayIntentBits.DirectMessages,
+        GatewayIntentBits.DirectMessageReactions,
+        GatewayIntentBits.DirectMessageTyping,
+        GatewayIntentBits.GuildPresences,
+        GatewayIntentBits.GuildEmojisAndStickers,
+        GatewayIntentBits.GuildInvites,
+        GatewayIntentBits.GuildWebhooks,
+        GatewayIntentBits.GuildIntegrations,
+        GatewayIntentBits.GuildModeration
     ],
+    partials: [
+        'USER',
+        'CHANNEL',
+        'GUILD_MEMBER',
+        'MESSAGE',
+        'REACTION',
+        'GUILD_SCHEDULED_EVENT'
+    ],
+    allowedMentions: { parse: ['users', 'roles'], repliedUser: true },
     shardCount: process.env.SHARD_COUNT ? parseInt(process.env.SHARD_COUNT) : 'auto',
     shard: process.argv[2] ? [parseInt(process.argv[2]), parseInt(process.argv[3])] : undefined,
     // Improve error tolerance
@@ -483,115 +500,71 @@ const loadEvents = async () => {
     }
 };
 
-// Initialize bot and handle errors
-async function initializeBot() {
+// Add this function after loadCommands
+const registerCommands = async () => {
     try {
-        // Check if shard is already running
+        const commands = [];
+        const commandFiles = await fsPromises.readdir(path.join(__dirname, 'commands'));
+        const jsFiles = commandFiles.filter(file => file.endsWith('.js'));
+        
+        for (const file of jsFiles) {
+            const commandPath = path.join(__dirname, 'commands', file);
+            const command = require(commandPath);
+            
+            if ('data' in command && 'execute' in command) {
+                commands.push(command.data.toJSON());
+                logger.info(`Prepared command for registration: ${command.data.name}`);
+            }
+        }
+
+        const rest = new REST().setToken(process.env.TOKEN);
+        logger.info(`Started refreshing ${commands.length} application (/) commands.`);
+
+        const data = await rest.put(
+            Routes.applicationCommands(process.env.CLIENT_ID),
+            { body: commands },
+        );
+
+        logger.info(`Successfully registered ${data.length} application (/) commands.`);
+    } catch (error) {
+        logger.error('Error registering commands:', error);
+    }
+};
+
+// Modify the startup sequence to include command registration
+const startBot = async () => {
+    try {
+        // Check if another instance is running
         if (await isShardRunning()) {
-            logger.error(`Shard ${process.argv[2]} is already running! Exiting.`);
+            logger.error(`Shard ${process.argv[2]} is already running!`);
             process.exit(1);
         }
 
         // Create lock file
         await createShardLock();
 
-        // Rest of initialization
-        await repairSettingsFile();
+        // Load settings first
         await loadSettings();
+        logger.info('Settings loaded successfully');
+
+        // Load commands and events
         await loadCommands();
         await loadEvents();
         
-        // Store intervals for cleanup
-        client.intervals = [];
-        
-        // Add memory check interval
-        const memCheckInterval = setInterval(checkMemoryUsage, 300000);
-        client.intervals.push(memCheckInterval);
-        
-        // Add settings save interval
-        const settingsSaveInterval = setInterval(saveSettings, 300000);
-        client.intervals.push(settingsSaveInterval);
-        
-        // Login to Discord
-        await client.login(process.env.TOKEN);
-        
-        logger.info(`Shard ${process.argv[2]} initialized successfully`);
-    } catch (error) {
-        logger.error('Failed to initialize shard:', error);
-        await shutdownShard('INIT_FAILURE');
-    }
-}
+        // Register commands with Discord API
+        await registerCommands();
 
-// Check and repair corrupted settings file if needed
-async function repairSettingsFile() {
-    if (!settingsFile) return;
-    
-    try {
-        // Check if file exists
-        const exists = await fsPromises.access(settingsFile)
-            .then(() => true)
-            .catch(() => false);
-            
-        if (!exists) {
-            logger.info(`Settings file not found, will create a new one during initialization`);
-            return;
-        }
-        
-        // Read the file content
-        const data = await fsPromises.readFile(settingsFile, 'utf8');
-        
-        // Skip empty files - they'll be handled by loadSettings
-        if (!data.trim()) return;
-        
-        // Check if it's valid JSON
-        try {
-            JSON.parse(data);
-            logger.info(`Verified settings file integrity at startup`);
-            return; // File is valid
-        } catch (parseError) {
-            logger.warn(`Found corrupted settings file at startup: ${parseError.message}`);
-            
-            // Back up corrupted file
-            const backupPath = `${settingsFile}.corrupt.startup.${Date.now()}`;
-            await fsPromises.writeFile(backupPath, data, 'utf8');
-            logger.info(`Backed up corrupted settings to ${backupPath}`);
-            
-            // Try to recover by finding the last complete object
-            let recoveredData = '{}';
-            if (data.trim().startsWith('{')) {
-                let openBrackets = 0;
-                let lastValidIndex = -1;
-                
-                // Find the last properly closed bracket
-                for (let i = 0; i < data.length; i++) {
-                    if (data[i] === '{') openBrackets++;
-                    else if (data[i] === '}') openBrackets--;
-                    
-                    if (openBrackets === 0) lastValidIndex = i;
-                }
-                
-                if (lastValidIndex > 0) {
-                    recoveredData = data.substring(0, lastValidIndex + 1);
-                    try {
-                        // Verify recovered data
-                        JSON.parse(recoveredData);
-                        logger.info(`Successfully recovered settings data during startup repair`);
-                    } catch {
-                        recoveredData = '{}';
-                        logger.warn(`Could not recover settings data, using empty object`);
-                    }
-                }
-            }
-            
-            // Save the recovered or empty data
-            await fsPromises.writeFile(settingsFile, recoveredData, 'utf8');
-            logger.info(`Repaired settings file at startup`);
-        }
+        // Add saveSettings method to client
+        client.saveSettings = saveSettings;
+
+        // Login
+        await client.login(process.env.TOKEN);
     } catch (error) {
-        logger.error(`Error repairing settings file: ${error.message}`);
-        // Continue anyway - loadSettings will handle this
+        logger.error('Error starting bot:', error);
+        await removeShardLock();
+        process.exit(1);
     }
-}
+};
 
 // Handle shard-specific events
 client.on('shardReady', id => {
@@ -624,4 +597,4 @@ client.isAdmin = (userId) => {
 };
 
 // Start the bot
-initializeBot(); 
+startBot(); 

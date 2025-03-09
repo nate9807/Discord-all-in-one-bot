@@ -1,4 +1,6 @@
 const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits, ChannelType } = require('discord.js');
+const logger = require('../utils/logger');
+const moment = require('moment');
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -57,99 +59,142 @@ module.exports = {
 
     const subcommand = interaction.options.getSubcommand();
 
-    if (subcommand === 'set') {
-      const message = interaction.options.getString('message');
-      const channel = interaction.options.getChannel('channel');
-      const useEmbed = interaction.options.getBoolean('embed') ?? true;
-      const color = interaction.options.getString('color') || '#00FF00';
-      // Default to true unless explicitly set to false
-      const showJoinDate = interaction.options.getBoolean('show_join_date') !== false; // true by default
-      const showAccountAge = interaction.options.getBoolean('show_account_age') !== false; // true by default
-      const showMemberCount = interaction.options.getBoolean('show_member_count') !== false; // true by default
-      const image = interaction.options.getString('image');
+    try {
+      if (subcommand === 'set') {
+        const message = interaction.options.getString('message');
+        const channel = interaction.options.getChannel('channel');
+        const useEmbed = interaction.options.getBoolean('embed') ?? true;
+        const color = interaction.options.getString('color') || '#00FF00';
+        // Default to true unless explicitly set to false
+        const showJoinDate = interaction.options.getBoolean('show_join_date') !== false; // true by default
+        const showAccountAge = interaction.options.getBoolean('show_account_age') !== false; // true by default
+        const showMemberCount = interaction.options.getBoolean('show_member_count') !== false; // true by default
+        const image = interaction.options.getString('image');
 
-      if (!channel.isTextBased() || channel.type === ChannelType.GuildVoice) {
-        return interaction.editReply({ content: 'Please select a text-based channel!' });
+        if (!channel.isTextBased() || channel.type === ChannelType.GuildVoice) {
+          return interaction.editReply({ content: 'Please select a text-based channel!' });
+        }
+        if (color && !/^#[0-9A-F]{6}$/i.test(color)) {
+          return interaction.editReply({ content: 'Invalid hex color! Use format #RRGGBB (e.g., #FF0000)' });
+        }
+        if (image && !image.match(/^https?:\/\/.*\.(png|jpg|jpeg|gif)$/i)) {
+          return interaction.editReply({ content: 'Invalid image URL! Must be a direct link to a PNG/JPG/GIF' });
+        }
+
+        // Save settings
+        client.settings.set(`${interaction.guild.id}:joinmessage`, {
+          text: message,
+          channelId: channel.id,
+          useEmbed,
+          color,
+          showJoinDate,
+          showAccountAge,
+          showMemberCount,
+          image
+        });
+
+        // Save to file
+        await client.saveSettings();
+
+        const previewEmbed = new EmbedBuilder()
+          .setTitle('Welcome Message Configured')
+          .setDescription(this.generatePreview(message, interaction.user, interaction.guild, { showJoinDate, showAccountAge, showMemberCount }))
+          .setColor(color)
+          .setFooter({ text: 'Variables: {user}, {username}, {server}' })
+          .setTimestamp();
+        
+        if (image) previewEmbed.setImage(image);
+
+        await interaction.editReply({ 
+          content: useEmbed ? undefined : this.generatePreview(message, interaction.user, interaction.guild, { showJoinDate, showAccountAge, showMemberCount }),
+          embeds: useEmbed ? [previewEmbed] : [],
+        });
+
+        // Send test message to welcome channel
+        const testEmbed = new EmbedBuilder()
+          .setTitle('Welcome Message Test')
+          .setDescription('✅ This channel has been set as the welcome messages channel. New members will be greeted here.')
+          .setColor('#00FFFF')
+          .setTimestamp();
+
+        await channel.send({ embeds: [testEmbed] });
+        logger.info(`Welcome message configured for guild ${interaction.guild.id} in channel ${channel.id}`);
+
+      } else if (subcommand === 'preview') {
+        const settings = client.settings.get(`${interaction.guild.id}:joinmessage`);
+        if (!settings) {
+          return interaction.editReply({ content: 'No welcome message configured yet!' });
+        }
+
+        const previewEmbed = new EmbedBuilder()
+          .setTitle('Welcome Message Preview')
+          .setDescription(this.generatePreview(settings.text, interaction.user, interaction.guild, {
+            showJoinDate: settings.showJoinDate,
+            showAccountAge: settings.showAccountAge,
+            showMemberCount: settings.showMemberCount
+          }))
+          .setColor(settings.color)
+          .setTimestamp();
+        
+        if (settings.image) previewEmbed.setImage(settings.image);
+
+        await interaction.editReply({ 
+          content: settings.useEmbed ? undefined : this.generatePreview(settings.text, interaction.user, interaction.guild, {
+            showJoinDate: settings.showJoinDate,
+            showAccountAge: settings.showAccountAge,
+            showMemberCount: settings.showMemberCount
+          }),
+          embeds: settings.useEmbed ? [previewEmbed] : [],
+        });
+
+      } else if (subcommand === 'disable') {
+        client.settings.delete(`${interaction.guild.id}:joinmessage`);
+        // Save to file after disabling
+        await client.saveSettings();
+        await interaction.editReply({ content: 'Welcome messages have been disabled!' });
+        logger.info(`Welcome messages disabled for guild ${interaction.guild.id}`);
       }
-      if (color && !/^#[0-9A-F]{6}$/i.test(color)) {
-        return interaction.editReply({ content: 'Invalid hex color! Use format #RRGGBB (e.g., #FF0000)' });
-      }
-      if (image && !image.match(/^https?:\/\/.*\.(png|jpg|jpeg|gif)$/i)) {
-        return interaction.editReply({ content: 'Invalid image URL! Must be a direct link to a PNG/JPG/GIF' });
-      }
-
-      client.settings.set(`${interaction.guild.id}:joinmessage`, {
-        text: message,
-        channelId: channel.id,
-        useEmbed,
-        color,
-        showJoinDate,
-        showAccountAge,
-        showMemberCount,
-        image
-      });
-
-      const previewEmbed = new EmbedBuilder()
-        .setTitle('Welcome Message Configured')
-        .setDescription(this.generatePreview(message, interaction.user, interaction.guild, { showJoinDate, showAccountAge, showMemberCount }))
-        .setColor(color)
-        .setFooter({ text: 'Variables: {user}, {username}, {server}' })
-        .setTimestamp();
-      
-      if (image) previewEmbed.setImage(image);
-
+    } catch (error) {
+      logger.error(`Error in joinservermessage command for guild ${interaction.guild.id}:`, error);
       await interaction.editReply({ 
-        content: useEmbed ? undefined : this.generatePreview(message, interaction.user, interaction.guild, { showJoinDate, showAccountAge, showMemberCount }),
-        embeds: useEmbed ? [previewEmbed] : [],
+        content: 'An error occurred while configuring welcome messages. Please try again.',
+        ephemeral: true 
       });
-
-    } else if (subcommand === 'preview') {
-      const settings = client.settings.get(`${interaction.guild.id}:joinmessage`);
-      if (!settings) {
-        return interaction.editReply({ content: 'No welcome message configured yet!' });
-      }
-
-      const previewEmbed = new EmbedBuilder()
-        .setTitle('Welcome Message Preview')
-        .setDescription(this.generatePreview(settings.text, interaction.user, interaction.guild, {
-          showJoinDate: settings.showJoinDate,
-          showAccountAge: settings.showAccountAge,
-          showMemberCount: settings.showMemberCount
-        }))
-        .setColor(settings.color)
-        .setTimestamp();
-      
-      if (settings.image) previewEmbed.setImage(settings.image);
-
-      await interaction.editReply({ 
-        content: settings.useEmbed ? undefined : this.generatePreview(settings.text, interaction.user, interaction.guild, {
-          showJoinDate: settings.showJoinDate,
-          showAccountAge: settings.showAccountAge,
-          showMemberCount: settings.showMemberCount
-        }),
-        embeds: settings.useEmbed ? [previewEmbed] : [],
-      });
-
-    } else if (subcommand === 'disable') {
-      client.settings.delete(`${interaction.guild.id}:joinmessage`);
-      await interaction.editReply({ content: 'Welcome messages have been disabled!' });
     }
   },
 
   generatePreview(message, user, guild, options) {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const accountAge = Math.floor(user.createdTimestamp / 1000);
+    const joinedAt = user.joinedTimestamp ? Math.floor(user.joinedTimestamp / 1000) : timestamp;
+
+    // Replace basic variables
     let preview = message
-      .replace('{user}', `<@${user.id}>`)
-      .replace('{username}', user.username)
-      .replace('{server}', guild.name);
+      .replace(/{user}/g, `<@${user.id}>`)
+      .replace(/{username}/g, user.username)
+      .replace(/{server}/g, guild.name)
+      .replace(/{membercount}/g, guild.memberCount.toLocaleString())
+      .replace(/{servername}/g, guild.name)
+      .replace(/{position}/g, guild.memberCount.toLocaleString());
+
+    // Add additional info if enabled
+    let additionalInfo = [];
 
     if (options.showJoinDate) {
-      preview += `\nJoined Server: <t:${Math.floor(user.joinedTimestamp / 1000)}:R>`;
+      additionalInfo.push(`📅 **Joined Server:** <t:${joinedAt}:F> (<t:${joinedAt}:R>)`);
     }
+
     if (options.showAccountAge) {
-      preview += `\nAccount Created: <t:${Math.floor(user.createdTimestamp / 1000)}:R>`;
+      additionalInfo.push(`⭐ **Account Created:** <t:${accountAge}:F> (<t:${accountAge}:R>)`);
     }
+
     if (options.showMemberCount) {
-      preview += `\nMember #: ${guild.memberCount}`;
+      additionalInfo.push(`👥 **Member #${guild.memberCount.toLocaleString()}**`);
+    }
+
+    // Add additional info if there are any
+    if (additionalInfo.length > 0) {
+      preview += '\n\n' + additionalInfo.join('\n');
     }
 
     return preview;
