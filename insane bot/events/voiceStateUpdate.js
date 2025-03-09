@@ -7,7 +7,7 @@ const {
   ActionRowBuilder,
   TextInputBuilder,
   TextInputStyle} = require('discord.js');
-  const { getVoiceConnection } = require('@discordjs/voice');
+const { getVoiceConnection } = require('@discordjs/voice');
 
 const logger = require('../utils/logger');
 
@@ -93,6 +93,22 @@ module.exports = {
       }
     }
 
+    // Handle music player voice state update if music module exists
+    try {
+      // Safely check if music player exists before accessing its methods
+      if (client.music && typeof client.music.players?.get === 'function') {
+        const player = client.music.players.get(oldState.guild.id);
+        if (player) {
+          // Music player exists, handle voice state update
+          // Additional music system logic can go here
+          logger.info(`Music player found for guild ${guildId} during voice state update`);
+        }
+      }
+    } catch (error) {
+      // Log error but don't crash the whole event
+      logger.error(`Error in music player voice state handling: ${error.message}`);
+    }
+
     // Join-to-Create logic
     const triggerChannels = client.settings.get(`${guildId}:jointocreate`) || [];
     const trigger = triggerChannels.find(tc => tc.channelId === newState.channelId);
@@ -121,7 +137,7 @@ module.exports = {
           const nextNumber = existingChannels.length ? Math.max(...existingChannels) + 1 : 1;
           channelName = `${triggerChannel.name} ${nextNumber}`;
           textChannelName = `${channelName}-control`;
-          userLimit = 2;
+          userLimit = 10;
         } else {
           channelName = `${user.displayName}'s Channel`;
           textChannelName = `${user.displayName}-control`;

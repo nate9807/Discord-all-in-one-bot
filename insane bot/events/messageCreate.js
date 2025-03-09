@@ -7,7 +7,43 @@ const DISBOARD_BOT_ID = '302050872383242240'; // Disboard's bot ID
 module.exports = {
   name: 'messageCreate',
   async execute(message, client) {
-    logger.info(`Message received: "${message.content}" from ${message.author.tag} (${message.author.id}) in ${message.guild ? message.channel.name : 'DM'} at ${new Date().toISOString()}`);
+    // Skip logging for bots except for specific cases (like Disboard)
+    if (message.author.bot && message.author.id !== DISBOARD_BOT_ID) {
+      return;
+    }
+
+    // Format message details for logging
+    const timestamp = new Date().toISOString();
+    const authorInfo = `${message.author.tag} (${message.author.id})`;
+    const channelInfo = message.guild 
+      ? `${message.guild.name} (${message.guild.id}) #${message.channel.name} (${message.channel.id})`
+      : 'Direct Message';
+    
+    // Log message metadata
+    let logDetails = `[${timestamp}] ${authorInfo} in ${channelInfo}`;
+    
+    // Log attachments if any
+    const attachments = message.attachments.size > 0 
+      ? ` | Attachments: ${message.attachments.map(a => a.url).join(', ')}`
+      : '';
+    
+    // Log embeds if any
+    const embeds = message.embeds.length > 0 
+      ? ` | Embeds: ${message.embeds.length}`
+      : '';
+    
+    // Log message content (truncate if too long)
+    const maxContentLength = 1500;
+    let content = message.content || '[No Text Content]';
+    if (content.length > maxContentLength) {
+      content = content.substring(0, maxContentLength) + '... [truncated]';
+    }
+    
+    // Create final log entry
+    const logEntry = `${logDetails}${attachments}${embeds}\nContent: ${content}`;
+    
+    // Log to messages log file
+    logger.messages(logEntry);
 
     if (!message.guild) return;
 
@@ -188,7 +224,7 @@ module.exports = {
       .setDescription(`**User:** ${message.author.tag} (${message.author.id})\n**Action:** ${action}\n**Total Violations:** ${violations.count}`)
       .addFields(
         { name: 'Reason', value: reason, inline: false },
-        { name: 'Message Content', value: description || 'N/A', inline: false },
+        { name: 'Message Content', value: message.content || 'N/A', inline: false },
         { name: 'Channel', value: `<#${message.channel.id}>`, inline: true },
         { name: 'Timestamp', value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: true },
         { name: 'Violation Breakdown', value: Object.entries(violations.types).map(([t, c]) => `${t}: ${c}`).join('\n') || 'N/A', inline: false }

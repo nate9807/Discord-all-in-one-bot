@@ -1,0 +1,1067 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Moderation Dashboard</title>
+    <link rel="stylesheet" href="/mod-dashboard.css">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+</head>
+<body>
+    <canvas id="particleCanvas"></canvas>
+    <div class="navbar">
+        <h1>Moderation Dashboard</h1>
+        <div class="nav-links">
+            <a href="/" class="nav-link">Home</a>
+            <a href="/music" class="nav-link">Music Dashboard</a>
+            <button class="logout-btn" onclick="window.location.href='/logout'">
+                <span class="material-icons">logout</span> Logout
+            </button>
+        </div>
+    </div>
+    <div class="container">
+        <!-- Server Stats Card -->
+        <div class="card stats-card">
+            <h2><span class="material-icons">analytics</span> Server Statistics</h2>
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <span class="material-icons stat-icon">group</span>
+                    <div class="stat-info">
+                        <div class="stat-label">Members</div>
+                        <div class="stat-value" id="memberCount">Loading...</div>
+                    </div>
+                </div>
+                <div class="stat-item">
+                    <span class="material-icons stat-icon">forum</span>
+                    <div class="stat-info">
+                        <div class="stat-label">Channels</div>
+                        <div class="stat-value" id="channelCount">Loading...</div>
+                    </div>
+                </div>
+                <div class="stat-item">
+                    <span class="material-icons stat-icon">verified</span>
+                    <div class="stat-info">
+                        <div class="stat-label">Roles</div>
+                        <div class="stat-value" id="roleCount">Loading...</div>
+                    </div>
+                </div>
+                <div class="stat-item">
+                    <span class="material-icons stat-icon">security</span>
+                    <div class="stat-info">
+                        <div class="stat-label">Mod Actions</div>
+                        <div class="stat-value" id="actionCount">Loading...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Recent Actions Card -->
+        <div class="card">
+            <h2><span class="material-icons">history</span> Recent Actions</h2>
+            <div class="action-filters">
+                <select id="actionFilter" onchange="filterActions()">
+                    <option value="all">All Actions</option>
+                    <option value="warn">Warnings</option>
+                    <option value="mute">Mutes</option>
+                    <option value="kick">Kicks</option>
+                    <option value="ban">Bans</option>
+                </select>
+                <button onclick="clearActionHistory()" class="clear-btn">
+                    <span class="material-icons">clear_all</span> Clear History
+                </button>
+            </div>
+            <div class="list" id="recentActions">
+                <!-- Actions will be populated here -->
+            </div>
+        </div>
+
+        <!-- User Management Card -->
+        <div class="card">
+            <h2><span class="material-icons">manage_accounts</span> User Management</h2>
+            <div class="user-management">
+                <div class="input-group">
+                    <label for="userSelect">Select User</label>
+                    <div class="select-wrapper">
+                        <input type="text" id="userSearchInput" placeholder="Search users..." class="select-search">
+                        <div class="select-dropdown" id="userSelectDropdown">
+                            <!-- Users will be populated here -->
+                        </div>
+                    </div>
+                </div>
+                <div class="filter-options">
+                    <select id="roleFilter" onchange="filterUsers()">
+                        <option value="all">All Roles</option>
+                    </select>
+                    <select id="statusFilter" onchange="filterUsers()">
+                        <option value="all">All Statuses</option>
+                        <option value="online">Online</option>
+                        <option value="idle">Idle</option>
+                        <option value="dnd">Do Not Disturb</option>
+                        <option value="offline">Offline</option>
+                    </select>
+                </div>
+                <div class="user-list" id="userList">
+                    <!-- Template for user cards -->
+                    <template id="userCardTemplate">
+                        <div class="user-card">
+                            <div class="user-header">
+                                <img class="user-avatar" src="" alt="User Avatar">
+                                <div class="user-info">
+                                    <div class="user-name"></div>
+                                    <div class="user-id"></div>
+                                </div>
+                            </div>
+                            <div class="user-roles">
+                                <!-- Roles will be added here -->
+                            </div>
+                            <div class="user-actions">
+                                <button class="user-action-btn" onclick="viewUserInfo(this.dataset.userId)">
+                                    <span class="material-icons">info</span>
+                                </button>
+                                <button class="user-action-btn" onclick="warnUser(this.dataset.userId)">
+                                    <span class="material-icons">warning</span>
+                                </button>
+                                <button class="user-action-btn" onclick="timeoutUser(this.dataset.userId)">
+                                    <span class="material-icons">timer</span>
+                                </button>
+                                <button class="user-action-btn" onclick="kickUser(this.dataset.userId)">
+                                    <span class="material-icons">person_remove</span>
+                                </button>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </div>
+
+        <!-- Moderation Actions Card -->
+        <div class="card">
+            <h2><span class="material-icons">gavel</span> Take Action</h2>
+            <div class="input-group">
+                <label for="actionType">Action Type</label>
+                <select id="actionType">
+                    <option value="warn">Warning</option>
+                    <option value="mute">Timeout</option>
+                    <option value="kick">Kick</option>
+                    <option value="ban">Ban</option>
+                </select>
+            </div>
+            <div class="input-group" id="muteTimeContainer" style="display: none;">
+                <label for="muteTime">Timeout Duration</label>
+                <div class="duration-inputs">
+                    <input type="number" id="muteDays" min="0" max="27" value="0" placeholder="Days">
+                    <input type="number" id="muteHours" min="0" max="23" value="1" placeholder="Hours">
+                    <input type="number" id="muteMins" min="0" max="59" value="0" placeholder="Minutes">
+                </div>
+            </div>
+            <div class="input-group">
+                <label for="reason">Reason</label>
+                <textarea id="reason" rows="3" placeholder="Enter detailed reason for this action"></textarea>
+            </div>
+            <button onclick="takeAction()" class="action-btn">
+                <span class="material-icons">gavel</span>
+                Take Action
+            </button>
+        </div>
+
+        <!-- Quick Actions Card -->
+        <div class="card">
+            <h2><span class="material-icons">flash_on</span> Quick Actions</h2>
+            <div class="quick-actions">
+                <button onclick="lockdownServer()" class="quick-action-btn">
+                    <span class="material-icons">lock</span>
+                    Server Lockdown
+                </button>
+                <button onclick="clearChat()" class="quick-action-btn">
+                    <span class="material-icons">cleaning_services</span>
+                    Clear Chat
+                </button>
+                <button onclick="muteAll()" class="quick-action-btn">
+                    <span class="material-icons">volume_off</span>
+                    Mute All
+                </button>
+                <button onclick="unmuteAll()" class="quick-action-btn">
+                    <span class="material-icons">volume_up</span>
+                    Unmute All
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div id="toastContainer"></div>
+
+    <script>
+        // Initialize variables
+        let serverStats = {};
+        let recentActions = [];
+        let users = [];
+        let updateInterval = null;
+        let selectedUserId = null;
+        let userSearchTimeout = null;
+
+        // Initialize dashboard
+        async function initialize() {
+            try {
+                setupParticles();
+                await Promise.all([
+                    fetchStats(),
+                    fetchRecentActions(),
+                    fetchUsers()
+                ]);
+
+                // Show mute time input when mute is selected
+                document.getElementById('actionType').addEventListener('change', function() {
+                    document.getElementById('muteTimeContainer').style.display = 
+                        this.value === 'mute' ? 'block' : 'none';
+                });
+
+                // Set up refresh intervals
+                updateInterval = setInterval(() => {
+                    fetchStats();
+                    fetchRecentActions();
+                    fetchUsers();
+                }, 30000);
+            } catch (err) {
+                console.error('Initialization error:', err);
+                showToast('Failed to initialize dashboard', 'error');
+            }
+        }
+
+        // Particle animation setup
+        function setupParticles() {
+            const canvas = document.getElementById('particleCanvas');
+            const ctx = canvas.getContext('2d');
+            let particlesArray = [];
+            const numberOfParticles = 50;
+            let animationFrameId;
+
+            // Set canvas size
+            function resizeCanvas() {
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+            }
+            resizeCanvas();
+
+            class Particle {
+                constructor() {
+                    this.reset();
+                }
+
+                reset() {
+                    this.x = Math.random() * canvas.width;
+                    this.y = Math.random() * canvas.height;
+                    this.size = Math.random() * 3 + 1;
+                    this.speedX = Math.random() * 2 - 1;
+                    this.speedY = Math.random() * 2 - 1;
+                    this.color = '#7289da';
+                    this.alpha = Math.random() * 0.5 + 0.5;
+                }
+
+                update() {
+                    this.x += this.speedX;
+                    this.y += this.speedY;
+
+                    if (this.x > canvas.width) this.x = 0;
+                    if (this.x < 0) this.x = canvas.width;
+                    if (this.y > canvas.height) this.y = 0;
+                    if (this.y < 0) this.y = canvas.height;
+                }
+
+                draw() {
+                    ctx.save();
+                    ctx.globalAlpha = this.alpha;
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                    ctx.fillStyle = this.color;
+                    ctx.fill();
+                    ctx.restore();
+                }
+            }
+
+            function init() {
+                particlesArray = [];
+                for (let i = 0; i < numberOfParticles; i++) {
+                    particlesArray.push(new Particle());
+                }
+            }
+
+            function animate() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                particlesArray.forEach(particle => {
+                    particle.update();
+                    particle.draw();
+                });
+                animationFrameId = requestAnimationFrame(animate);
+            }
+
+            // Handle window resize
+            window.addEventListener('resize', () => {
+                resizeCanvas();
+                init();
+            });
+
+            // Handle visibility change
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) {
+                    cancelAnimationFrame(animationFrameId);
+                } else {
+                    animate();
+                }
+            });
+
+            init();
+            animate();
+        }
+
+        // Fetch server statistics
+        async function fetchStats() {
+            try {
+                const response = await fetch('/api/stats', { credentials: 'include' });
+                const data = await response.json();
+                if (data.error) {
+                    showToast(data.error, 'error');
+                    return;
+                }
+                serverStats = data;
+                updateStatsDisplay();
+            } catch (err) {
+                console.error('Error fetching stats:', err);
+                showToast('Failed to fetch server statistics', 'error');
+            }
+        }
+
+        // Update statistics display
+        function updateStatsDisplay() {
+            document.getElementById('memberCount').textContent = serverStats.members || '0';
+            document.getElementById('channelCount').textContent = serverStats.channels || '0';
+            document.getElementById('roleCount').textContent = serverStats.roles || '0';
+            document.getElementById('actionCount').textContent = recentActions.length || '0';
+        }
+
+        // Fetch recent actions
+        async function fetchRecentActions() {
+            try {
+                const response = await fetch('/api/recent-actions', { credentials: 'include' });
+                const data = await response.json();
+                if (data.error) {
+                    showToast(data.error, 'error');
+                    return;
+                }
+                recentActions = data.actions;
+                updateRecentActionsDisplay();
+                updateStatsDisplay();
+            } catch (err) {
+                console.error('Error fetching recent actions:', err);
+                showToast('Failed to fetch recent actions', 'error');
+            }
+        }
+
+        // Update recent actions display
+        function updateRecentActionsDisplay() {
+            const container = document.getElementById('recentActions');
+            container.innerHTML = '';
+            
+            if (recentActions.length === 0) {
+                container.innerHTML = '<div class="empty-list">No recent actions</div>';
+                return;
+            }
+
+            const filter = document.getElementById('actionFilter').value;
+            const filteredActions = filter === 'all' 
+                ? recentActions 
+                : recentActions.filter(action => action.type === filter);
+
+            filteredActions.forEach(action => {
+                const element = document.createElement('div');
+                element.className = 'list-item';
+                element.innerHTML = `
+                    <div class="list-item-info">
+                        <div class="list-item-title">
+                            <span class="material-icons action-icon ${action.type}">
+                                ${getActionIcon(action.type)}
+                            </span>
+                            ${action.type.toUpperCase()} - ${action.target}
+                        </div>
+                        <div class="list-item-subtitle">
+                            <span class="reason">${action.reason}</span>
+                            <span class="meta">By ${action.moderator} • ${formatDate(action.timestamp)}</span>
+                        </div>
+                    </div>
+                `;
+                container.appendChild(element);
+            });
+        }
+
+        // Get icon for action type
+        function getActionIcon(type) {
+            switch(type) {
+                case 'warn': return 'warning';
+                case 'mute': return 'volume_off';
+                case 'kick': return 'person_remove';
+                case 'ban': return 'gavel';
+                default: return 'info';
+            }
+        }
+
+        // Filter actions
+        function filterActions() {
+            updateRecentActionsDisplay();
+        }
+
+        // Clear action history
+        function clearActionHistory() {
+            if (confirm('Are you sure you want to clear the action history?')) {
+                recentActions = [];
+                updateRecentActionsDisplay();
+                updateStatsDisplay();
+                showToast('Action history cleared', 'success');
+            }
+        }
+
+        // Fetch users
+        async function fetchUsers(retryCount = 0) {
+            try {
+                const response = await fetch('/users', { credentials: 'include' });
+                const data = await response.json();
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
+                users = data.members;
+                updateUserList();
+                updateUserDropdown();
+                
+                // Reset error counter on successful fetch
+                if (window.fetchUsersErrorCount) {
+                    window.fetchUsersErrorCount = 0;
+                }
+            } catch (err) {
+                console.error('Error fetching users:', err);
+                
+                // Increment error counter
+                window.fetchUsersErrorCount = (window.fetchUsersErrorCount || 0) + 1;
+                
+                // Show error toast only on first error
+                if (window.fetchUsersErrorCount === 1) {
+                    showToast('Failed to fetch users. Retrying...', 'warning');
+                }
+                
+                // Implement exponential backoff for retries
+                if (retryCount < 3) {
+                    const delay = Math.min(1000 * Math.pow(2, retryCount), 5000);
+                    setTimeout(() => fetchUsers(retryCount + 1), delay);
+                } else {
+                    showToast('Failed to fetch users after multiple attempts. Please refresh the page.', 'error');
+                }
+            }
+        }
+
+        // Update user list display
+        function updateUserList() {
+            const userList = document.getElementById('userList');
+            const template = document.getElementById('userCardTemplate');
+            const roleFilter = document.getElementById('roleFilter');
+            
+            // Clear existing content
+            userList.innerHTML = '';
+            
+            // Update role filter options
+            const roles = new Set();
+            users.forEach(user => user.roles.forEach(role => roles.add(role.name)));
+            
+            if (roleFilter.children.length === 1) {
+                roles.forEach(role => {
+                    const option = document.createElement('option');
+                    option.value = role;
+                    option.textContent = role;
+                    roleFilter.appendChild(option);
+                });
+            }
+            
+            // Add user cards
+            users.forEach(user => {
+                const card = template.content.cloneNode(true);
+                
+                // Set user data
+                const avatar = card.querySelector('.user-avatar');
+                avatar.src = user.avatar || '/default-avatar.png';
+                
+                const userName = card.querySelector('.user-name');
+                userName.textContent = user.username;
+                
+                const userId = card.querySelector('.user-id');
+                userId.textContent = user.id;
+                
+                const rolesContainer = card.querySelector('.user-roles');
+                user.roles.forEach(role => {
+                    const roleTag = document.createElement('span');
+                    roleTag.className = 'role-tag';
+                    roleTag.textContent = role.name;
+                    roleTag.style.backgroundColor = role.color || 'var(--input-background)';
+                    rolesContainer.appendChild(roleTag);
+                });
+                
+                // Set action button data attributes
+                const buttons = card.querySelectorAll('.user-action-btn');
+                buttons.forEach(btn => btn.dataset.userId = user.id);
+                
+                userList.appendChild(card);
+            });
+        }
+
+        // Quick action handler
+        async function quickAction(action, userId) {
+            const reason = prompt(`Enter reason for ${action}:`);
+            if (!reason) return;
+
+            try {
+                const response = await fetch('/api/mod-action', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId, actionType: action, reason }),
+                    credentials: 'include'
+                });
+                const data = await response.json();
+                
+                if (data.error) {
+                    showToast(data.error, 'error');
+                    return;
+                }
+
+                showToast('Action taken successfully', 'success');
+                fetchRecentActions();
+                fetchUsers();
+            } catch (err) {
+                console.error('Error taking action:', err);
+                showToast('Failed to take action', 'error');
+            }
+        }
+
+        // Update user select dropdown
+        function updateUserDropdown() {
+            const dropdown = document.getElementById('userSelectDropdown');
+            dropdown.innerHTML = '';
+            
+            const filteredUsers = users.filter(user => 
+                user.username.toLowerCase().includes(selectedUserId) ||
+                user.id.includes(selectedUserId) ||
+                user.roles.some(role => role.name.toLowerCase().includes(selectedUserId))
+            );
+
+            if (filteredUsers.length === 0) {
+                dropdown.innerHTML = '<div class="select-option">No users found</div>';
+                return;
+            }
+
+            filteredUsers.forEach(user => {
+                const option = document.createElement('div');
+                option.className = 'select-option';
+                option.innerHTML = `
+                    <img src="${user.avatar || '/default-avatar.png'}" alt="Avatar">
+                    <div class="user-info">
+                        <div class="username">${user.username}</div>
+                        <div class="user-id">${user.id}</div>
+                        <div class="user-roles">
+                            ${user.roles.slice(0, 3).map(role => 
+                                `<span class="role-tag" style="background-color: ${role.color || 'var(--input-background)'}">${role.name}</span>`
+                            ).join('')}
+                            ${user.roles.length > 3 ? `<span class="role-tag">+${user.roles.length - 3} more</span>` : ''}
+                        </div>
+                    </div>
+                `;
+                
+                option.addEventListener('click', () => {
+                    selectedUserId = user.id;
+                    document.getElementById('userSearchInput').value = user.username;
+                    dropdown.classList.remove('show');
+                });
+                
+                dropdown.appendChild(option);
+            });
+        }
+
+        // Filter users based on search input
+        function filterUsers() {
+            const searchTerm = document.getElementById('userSearchInput').value.toLowerCase();
+            const roleFilter = document.getElementById('roleFilter').value;
+            const statusFilter = document.getElementById('statusFilter').value;
+            
+            const filteredUsers = users.filter(user => {
+                const matchesSearch = user.username.toLowerCase().includes(searchTerm) ||
+                                    user.id.includes(searchTerm) ||
+                                    user.roles.some(role => role.name.toLowerCase().includes(searchTerm));
+                                    
+                const matchesRole = roleFilter === 'all' || user.roles.some(role => role.name === roleFilter);
+                const matchesStatus = statusFilter === 'all' || user.status === statusFilter;
+                
+                return matchesSearch && matchesRole && matchesStatus;
+            });
+            
+            updateUserList(filteredUsers);
+        }
+
+        // Take moderation action
+        async function takeAction() {
+            if (!selectedUserId) {
+                showToast('Please select a user', 'warning');
+                return;
+            }
+
+            const actionType = document.getElementById('actionType').value;
+            let reason = document.getElementById('reason').value;
+
+            if (!actionType || !reason) {
+                showToast('Please fill in all fields', 'warning');
+                return;
+            }
+
+            if (actionType === 'mute') {
+                const days = parseInt(document.getElementById('muteDays').value) || 0;
+                const hours = parseInt(document.getElementById('muteHours').value) || 0;
+                const mins = parseInt(document.getElementById('muteMins').value) || 0;
+                const totalMinutes = (days * 24 * 60) + (hours * 60) + mins;
+                
+                if (totalMinutes < 1) {
+                    showToast('Please enter a valid timeout duration', 'warning');
+                    return;
+                }
+                reason = totalMinutes.toString();
+            }
+
+            try {
+                const response = await fetch('/api/mod-action', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId: selectedUserId, actionType, reason }),
+                    credentials: 'include'
+                });
+                const data = await response.json();
+                
+                if (data.error) {
+                    showToast(data.error, 'error');
+                    return;
+                }
+
+                showToast('Action taken successfully', 'success');
+                document.getElementById('reason').value = '';
+                document.getElementById('userSearchInput').value = '';
+                if (actionType === 'mute') {
+                    document.getElementById('muteDays').value = '0';
+                    document.getElementById('muteHours').value = '1';
+                    document.getElementById('muteMins').value = '0';
+                }
+                fetchRecentActions();
+                fetchUsers();
+            } catch (err) {
+                console.error('Error taking action:', err);
+                showToast('Failed to take action', 'error');
+            }
+        }
+
+        // User action handlers
+        async function viewUserInfo(userId) {
+            const user = users.find(u => u.id === userId);
+            if (!user) {
+                showToast('User not found', 'error');
+                return;
+            }
+
+            const roles = user.roles.map(role => `<span class="role-tag" style="background-color: ${role.color || 'var(--input-background)'}">${role.name}</span>`).join('');
+            
+            showToast(`
+                <div style="margin-bottom: 10px;">
+                    <img src="${user.avatar}" alt="Avatar" style="width: 32px; height: 32px; border-radius: 50%; margin-right: 10px;">
+                    <strong>${user.username}</strong>
+                </div>
+                <div style="margin-bottom: 5px;">ID: ${user.id}</div>
+                <div style="margin-bottom: 5px;">Status: ${user.status}</div>
+                <div>Roles: ${roles}</div>
+            `, 'info');
+        }
+
+        async function warnUser(userId) {
+            const reason = prompt('Enter warning reason:');
+            if (!reason) return;
+
+            try {
+                const response = await fetch('/api/mod-action', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId, actionType: 'warn', reason }),
+                    credentials: 'include'
+                });
+                
+                const data = await response.json();
+                if (data.error) {
+                    showToast(data.error, 'error');
+                    return;
+                }
+
+                showToast('Warning sent successfully', 'success');
+                await fetchRecentActions();
+            } catch (err) {
+                console.error('Error warning user:', err);
+                showToast('Failed to warn user', 'error');
+            }
+        }
+
+        async function timeoutUser(userId) {
+            const duration = prompt('Enter timeout duration in minutes:');
+            if (!duration) return;
+
+            const reason = prompt('Enter timeout reason:');
+            if (!reason) return;
+
+            try {
+                const response = await fetch('/api/mod-action', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId, actionType: 'mute', reason: duration }),
+                    credentials: 'include'
+                });
+                
+                const data = await response.json();
+                if (data.error) {
+                    showToast(data.error, 'error');
+                    return;
+                }
+
+                showToast('User timed out successfully', 'success');
+                await fetchRecentActions();
+                await fetchUsers();
+            } catch (err) {
+                console.error('Error timing out user:', err);
+                showToast('Failed to timeout user', 'error');
+            }
+        }
+
+        async function kickUser(userId) {
+            const reason = prompt('Enter kick reason:');
+            if (!reason) return;
+
+            if (!confirm('Are you sure you want to kick this user?')) return;
+
+            try {
+                const response = await fetch('/api/mod-action', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId, actionType: 'kick', reason }),
+                    credentials: 'include'
+                });
+                
+                const data = await response.json();
+                if (data.error) {
+                    showToast(data.error, 'error');
+                    return;
+                }
+
+                showToast('User kicked successfully', 'success');
+                await fetchRecentActions();
+                await fetchUsers();
+            } catch (err) {
+                console.error('Error kicking user:', err);
+                showToast('Failed to kick user', 'error');
+            }
+        }
+
+        // Quick Actions
+        async function lockdownServer() {
+            const reason = prompt('Enter reason for server lockdown:');
+            if (!reason) return;
+            
+            try {
+                const response = await fetch('/api/lockdown', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ reason }),
+                    credentials: 'include'
+                });
+                
+                const data = await response.json();
+                if (data.error) {
+                    showToast(data.error, 'error');
+                    return;
+                }
+
+                showToast('Server locked down successfully', 'success');
+            } catch (err) {
+                console.error('Error during lockdown:', err);
+                showToast('Failed to lockdown server', 'error');
+            }
+        }
+
+        async function clearChat() {
+            const amount = prompt('Enter number of messages to clear (1-100):', '50');
+            if (!amount) return;
+            
+            const channelId = prompt('Enter channel ID to clear:');
+            if (!channelId) return;
+
+            try {
+                const response = await fetch('/api/clear-chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ channelId, amount: parseInt(amount) }),
+                    credentials: 'include'
+                });
+                
+                const data = await response.json();
+                if (data.error) {
+                    showToast(data.error, 'error');
+                    return;
+                }
+
+                showToast(data.message, 'success');
+            } catch (err) {
+                console.error('Error clearing chat:', err);
+                showToast('Failed to clear chat', 'error');
+            }
+        }
+
+        async function muteAll() {
+            const reason = prompt('Enter reason for muting all users:');
+            if (!reason) return;
+            
+            try {
+                const response = await fetch('/api/voice-mute-all', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ reason }),
+                    credentials: 'include'
+                });
+                
+                const data = await response.json();
+                if (data.error) {
+                    showToast(data.error, 'error');
+                    return;
+                }
+
+                showToast('All users muted successfully', 'success');
+            } catch (err) {
+                console.error('Error muting all:', err);
+                showToast('Failed to mute all users', 'error');
+            }
+        }
+
+        async function unmuteAll() {
+            try {
+                const response = await fetch('/api/voice-unmute-all', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include'
+                });
+                
+                const data = await response.json();
+                if (data.error) {
+                    showToast(data.error, 'error');
+                    return;
+                }
+
+                showToast('All users unmuted successfully', 'success');
+            } catch (err) {
+                console.error('Error unmuting all:', err);
+                showToast('Failed to unmute all users', 'error');
+            }
+        }
+
+        // Format date
+        function formatDate(timestamp) {
+            const date = new Date(timestamp);
+            return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+        }
+
+        // Show toast notification
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.innerHTML = `
+                <span class="material-icons">${getToastIcon(type)}</span>
+                <span class="toast-message">${message}</span>
+            `;
+            
+            container.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                setTimeout(() => {
+                    container.removeChild(toast);
+                }, 300);
+            }, 3000);
+        }
+
+        // Get toast icon based on type
+        function getToastIcon(type) {
+            switch(type) {
+                case 'success': return 'check_circle';
+                case 'error': return 'error';
+                case 'warning': return 'warning';
+                default: return 'info';
+            }
+        }
+
+        // Add these new styles to handle the enhanced select dropdown
+        const styleSheet = document.createElement("style");
+        styleSheet.textContent = `
+            .select-wrapper {
+                position: relative;
+                width: 100%;
+            }
+
+            .select-search {
+                width: 100%;
+                padding: 0.5rem;
+                background-color: var(--input-background);
+                color: var(--text-color);
+                border: none;
+                border-radius: var(--border-radius);
+                font-size: 1rem;
+                outline: none;
+            }
+
+            .select-dropdown {
+                position: absolute;
+                top: 100%;
+                left: 0;
+                right: 0;
+                background-color: var(--card-background);
+                border-radius: var(--border-radius);
+                max-height: 200px;
+                overflow-y: auto;
+                z-index: 1000;
+                display: none;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            }
+
+            .select-dropdown.show {
+                display: block;
+            }
+
+            .select-option {
+                padding: 0.5rem 1rem;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                gap: 0.5rem;
+                transition: background-color var(--transition-speed);
+            }
+
+            .select-option:hover {
+                background-color: var(--input-background);
+            }
+
+            .select-option img {
+                width: 24px;
+                height: 24px;
+                border-radius: 50%;
+            }
+
+            .select-option .user-info {
+                flex: 1;
+            }
+
+            .select-option .username {
+                font-weight: 500;
+            }
+
+            .select-option .user-id {
+                font-size: 0.8rem;
+                opacity: 0.7;
+            }
+
+            .select-option .user-roles {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 0.25rem;
+                margin-top: 0.25rem;
+            }
+
+            .select-option .role-tag {
+                font-size: 0.7rem;
+                padding: 0.1rem 0.3rem;
+            }
+        `;
+        document.head.appendChild(styleSheet);
+
+        // Add these new functions to handle the enhanced select dropdown
+        function initializeUserSelect() {
+            const searchInput = document.getElementById('userSearchInput');
+            const dropdown = document.getElementById('userSelectDropdown');
+            
+            searchInput.addEventListener('input', () => {
+                clearTimeout(userSearchTimeout);
+                userSearchTimeout = setTimeout(() => {
+                    const searchTerm = searchInput.value.toLowerCase();
+                    updateUserDropdown(searchTerm);
+                }, 300);
+            });
+
+            searchInput.addEventListener('focus', () => {
+                dropdown.classList.add('show');
+                updateUserDropdown(searchInput.value.toLowerCase());
+            });
+
+            // Close dropdown when clicking outside
+            document.addEventListener('click', (e) => {
+                if (!e.target.closest('.select-wrapper')) {
+                    dropdown.classList.remove('show');
+                }
+            });
+        }
+
+        function updateUserDropdown(searchTerm = '') {
+            const dropdown = document.getElementById('userSelectDropdown');
+            dropdown.innerHTML = '';
+            
+            const filteredUsers = users.filter(user => 
+                user.username.toLowerCase().includes(searchTerm) ||
+                user.id.includes(searchTerm) ||
+                user.roles.some(role => role.name.toLowerCase().includes(searchTerm))
+            );
+
+            if (filteredUsers.length === 0) {
+                dropdown.innerHTML = '<div class="select-option">No users found</div>';
+                return;
+            }
+
+            filteredUsers.forEach(user => {
+                const option = document.createElement('div');
+                option.className = 'select-option';
+                option.innerHTML = `
+                    <img src="${user.avatar || '/default-avatar.png'}" alt="Avatar">
+                    <div class="user-info">
+                        <div class="username">${user.username}</div>
+                        <div class="user-id">${user.id}</div>
+                        <div class="user-roles">
+                            ${user.roles.slice(0, 3).map(role => 
+                                `<span class="role-tag" style="background-color: ${role.color || 'var(--input-background)'}">${role.name}</span>`
+                            ).join('')}
+                            ${user.roles.length > 3 ? `<span class="role-tag">+${user.roles.length - 3} more</span>` : ''}
+                        </div>
+                    </div>
+                `;
+                
+                option.addEventListener('click', () => {
+                    selectedUserId = user.id;
+                    document.getElementById('userSearchInput').value = user.username;
+                    dropdown.classList.remove('show');
+                });
+                
+                dropdown.appendChild(option);
+            });
+        }
+
+        // Start initialization when page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            initialize();
+            initializeUserSelect();
+        });
+
+        // Clean up interval when page is unloaded
+        window.addEventListener('beforeunload', () => {
+            if (updateInterval) clearInterval(updateInterval);
+        });
+    </script>
+</body>
+</html> 

@@ -1,0 +1,198 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/icon?family=Material+Icons+Round');
+
+:root {
+    --primary: #7289da;
+    --primary-dark: #5e6db8;
+    --background: #0a0b0e;
+    --surface: rgba(54, 57, 63, 0.95);
+    --surface-light: rgba(64, 68, 75, 0.95);
+    --text: #e2e3e5;
+    --text-secondary: #9fa1a4;
+    --error: #dc3545;
+    --success: #43b581;
+    --warning: #faa61a;
+    --glow: 0 0 10px rgba(114, 137, 218, 0.3);
+}
+
+body {
+    font-family: 'Inter', sans-serif;
+    margin: 0;
+    padding: 0;
+    min-height: 100vh;
+    background: var(--background);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    overflow-x: hidden;
+}
+
+.navbar {
+    background: var(--surface);
+    padding: 15px 25px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    backdrop-filter: blur(20px);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+}
+
+.navbar h1 {
+    margin: 0;
+    font-size: 28px;
+    color: var(--primary);
+    font-weight: 600;
+    letter-spacing: -0.5px;
+}
+
+.logout-btn {
+    background: #dc3545;
+    border: none;
+    padding: 8px 15px;
+    color: white;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.logout-btn:hover {
+    background: #c82333;
+    transform: translateY(-2px);
+}
+
+.container {
+    flex: 1;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 40px;
+    gap: 40px;
+    position: relative;
+}
+
+.dashboard-card {
+    width: 400px;
+    aspect-ratio: 3/4;
+    background: var(--surface);
+    border-radius: 24px;
+    padding: 30px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none;
+    color: var(--text);
+    position: relative;
+    overflow: hidden;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(20px);
+}
+
+.dashboard-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: radial-gradient(circle at center, rgba(114, 137, 218, 0.15) 0%, transparent 70%);
+    opacity: 0;
+    transition: opacity 0.3s ease;
+}
+
+.dashboard-card:hover {
+    transform: translateY(-10px) scale(1.02);
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+}
+
+.dashboard-card:hover::before {
+    opacity: 1;
+}
+
+.card-icon {
+    font-size: 80px;
+    color: var(--primary);
+    margin-bottom: 30px;
+    transition: all 0.3s ease;
+}
+
+.dashboard-card:hover .card-icon {
+    transform: scale(1.1);
+    color: white;
+}
+
+.card-title {
+    font-size: 32px;
+    font-weight: 600;
+    margin-bottom: 20px;
+    text-align: center;
+}
+
+.card-description {
+    font-size: 16px;
+    color: var(--text-secondary);
+    text-align: center;
+    line-height: 1.6;
+    margin-bottom: 30px;
+}
+
+.card-features {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    text-align: center;
+}
+
+.feature-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 15px;
+    color: var(--text-secondary);
+    font-size: 14px;
+}
+
+.feature-icon {
+    color: var(--primary);
+    font-size: 20px;
+}
+
+.particles {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: -1;
+}
+
+@keyframes float {
+    0% { transform: translateY(0px); }
+    50% { transform: translateY(-20px); }
+    100% { transform: translateY(0px); }
+}
+
+.dashboard-card:nth-child(1) {
+    animation: float 6s ease-in-out infinite;
+}
+
+.dashboard-card:nth-child(2) {
+    animation: float 6s ease-in-out infinite 1s;
+}
+
+@media (max-width: 900px) {
+    .container {
+        flex-direction: column;
+        padding: 20px;
+    }
+
+    .dashboard-card {
+        width: 100%;
+        max-width: 400px;
+        aspect-ratio: auto;
+        padding: 20px;
+    }
+} 

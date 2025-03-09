@@ -6,6 +6,9 @@ const path = require('path');
 const session = require('express-session');
 const os = require('os');
 const logger = require('../utils/logger'); // Assuming logger is available in this path
+const createAuthMiddleware = require('./middleware/auth');
+const NodeCache = require('node-cache');
+const userCache = new NodeCache({ stdTTL: 60 }); // Cache for 1 minute
 
 const app = express();
 
@@ -38,38 +41,17 @@ const options = {
 
 // Session middleware
 app.use(session({
-    secret: process.env.SESSION_SECRET || 'update for hardcoded secret', // Allow override via .env
+    secret: process.env.SESSION_SECRET || 'your-session-secret',
     resave: false,
     saveUninitialized: false,
-    cookie: { secure: true, maxAge: 24 * 60 * 60 * 1000 }
+    cookie: { 
+        secure: process.env.SSL_KEY_PATH && process.env.SSL_CERT_PATH ? true : false,
+        maxAge: 24 * 60 * 60 * 1000 
+    }
 }));
 
 app.use(express.json());
-app.use(express.static(path.join(process.env.STATIC_FILES_PATH || 'update for hardcoded locations')));
-
-// Authentication middleware
-const isAuthenticated = (req, res, next) => {
-    if (!req.session.user) return res.redirect('/login');
-    next();
-};
-
-const isAdminAuthenticated = (req, res, next) => {
-    if (!req.session.user) return res.redirect('/login');
-    const guildId = req.query.guildId || req.body.guildId || req.session.selectedGuildId || process.env.GUILD_ID || 'update for hardcoded guild id';
-    checkAdmin(req.session.user.id, guildId)
-        .then(isAdmin => {
-            if (isAdmin) {
-                req.session.selectedGuildId = guildId;
-                next();
-            } else {
-                res.status(403).send('You do not have admin permissions in this server.');
-            }
-        })
-        .catch(err => {
-            logger.error('Error checking admin permissions:', err);
-            res.status(500).send('Internal server error');
-        });
-};
+app.use(express.static(path.join(__dirname, 'public')));
 
 let manager;
 
@@ -95,6 +77,48 @@ async function checkAdmin(userId, guildId) {
 
 function start(shardingManager) {
     manager = shardingManager;
+    
+    // Initialize auth middleware with the manager
+    const { isAuthenticated } = createAuthMiddleware(manager);
+    
+    // Initialize admin auth middleware
+    const isAdminAuthenticated = (req, res, next) => {
+        if (!req.session.user) return res.redirect('/login');
+        const guildId = req.query.guildId || req.body.guildId || req.session.selectedGuildId || process.env.GUILD_ID;
+        checkAdmin(req.session.user.id, guildId)
+            .then(isAdmin => {
+                if (isAdmin) {
+                    req.session.selectedGuildId = guildId;
+                    next();
+                } else {
+                    res.status(403).send('You do not have admin permissions in this server.');
+                }
+            })
+            .catch(err => {
+                logger.error('Error checking admin permissions:', err);
+                res.status(500).send('Internal server error');
+            });
+    };
+
+    let server;
+    const port = process.env.WEB_PORT || 3000;
+
+    // Check if SSL certificates are provided
+    if (process.env.SSL_KEY_PATH && process.env.SSL_CERT_PATH && 
+        fs.existsSync(process.env.SSL_KEY_PATH) && fs.existsSync(process.env.SSL_CERT_PATH)) {
+        // Create HTTPS server
+        const options = {
+            key: fs.readFileSync(process.env.SSL_KEY_PATH),
+            cert: fs.readFileSync(process.env.SSL_CERT_PATH)
+        };
+        server = https.createServer(options, app);
+        logger.info('Starting dashboard with HTTPS');
+    } else {
+        // Create HTTP server if no SSL certificates
+        const http = require('http');
+        server = http.createServer(app);
+        logger.info('Starting dashboard with HTTP (no SSL certificates found)');
+    }
 
     app.get('/login', (req, res) => {
         const authUrl = `https://discord.com/api/oauth2/authorize?client_id=${process.env.CLIENT_ID}&redirect_uri=${encodeURIComponent(process.env.REDIRECT_URI)}&response_type=code&scope=identify guilds`;
@@ -132,8 +156,569 @@ function start(shardingManager) {
         }
     });
 
-    app.get('/', isAdminAuthenticated, (req, res) => {
-        res.sendFile(path.join(process.env.STATIC_FILES_PATH || '/var/www/mizmix-bot/view/public', 'dashboard.html'));
+    app.get('/', isAuthenticated, (req, res) => {
+        res.sendFile(path.join(__dirname, 'public', 'landing.html'));
+    });
+
+    app.get('/mod', isAdminAuthenticated, (req, res) => {
+        res.sendFile(path.join(__dirname, 'public', 'mod-dashboard.html'));
+    });
+
+    app.get('/api/stats', isAdminAuthenticated, async (req, res) => {
+        try {
+            const guildId = req.session.selectedGuildId;
+            const data = await manager.broadcastEval(async (client, { guildId }) => {
+                const guild = client.guilds.cache.get(guildId);
+                if (!guild) return null;
+                return {
+                    members: guild.memberCount,
+                    channels: guild.channels.cache.size,
+                    roles: guild.roles.cache.size
+                };
+            }, { context: { guildId } });
+            res.json(data.find(d => d) || { error: 'Guild not found' });
+        } catch (error) {
+            res.status(500).json({ error: 'Failed to fetch stats' });
+            logger.error('Stats endpoint error:', error);
+        }
+    });
+
+    app.get('/api/recent-actions', isAdminAuthenticated, async (req, res) => {
+        try {
+            const guildId = req.session.selectedGuildId;
+            const data = await manager.broadcastEval(async (client, { guildId }) => {
+                return client.modLog?.get(guildId) || [];
+            }, { context: { guildId } });
+            res.json({ actions: data.flat().slice(-50) });
+        } catch (error) {
+            res.status(500).json({ error: 'Failed to fetch recent actions' });
+            logger.error('Recent actions endpoint error:', error);
+        }
+    });
+
+    app.post('/api/mod-action', isAuthenticated, async (req, res) => {
+        try {
+            const { userId, actionType, reason } = req.body;
+            const guildId = req.session.selectedGuildId;
+
+            const result = await manager.broadcastEval(async (client, { guildId, userId, actionType, reason }) => {
+                const guild = client.guilds.cache.get(guildId);
+                if (!guild) return { error: 'Guild not found' };
+
+                const member = await guild.members.fetch(userId).catch(() => null);
+                if (!member) return { error: 'Member not found' };
+
+                try {
+                    switch (actionType) {
+                        case 'warn':
+                            // Store warning in database or send warning message
+                            await member.send(`You have been warned in ${guild.name}. Reason: ${reason}`).catch(() => {});
+                            return { success: true, message: 'Warning sent' };
+
+                        case 'mute':
+                            const duration = parseInt(reason); // reason contains duration in minutes for mute
+                            await member.timeout(duration * 60 * 1000, 'Timeout by moderator');
+                            return { success: true, message: 'User timed out' };
+
+                        case 'kick':
+                            await member.kick(reason);
+                            return { success: true, message: 'User kicked' };
+
+                        case 'ban':
+                            await member.ban({ reason });
+                            return { success: true, message: 'User banned' };
+
+                        default:
+                            return { error: 'Invalid action type' };
+                    }
+                } catch (err) {
+                    return { error: err.message };
+                }
+            }, { context: { guildId, userId, actionType, reason } });
+
+            const response = result[0];
+            if (response.error) {
+                return res.status(400).json({ error: response.error });
+            }
+            res.json(response);
+        } catch (err) {
+            console.error('Error in mod action:', err);
+            res.status(500).json({ error: 'Internal server error' });
+        }
+    });
+
+    // Quick actions endpoints
+    app.post('/api/lockdown', isAuthenticated, async (req, res) => {
+        try {
+            const { reason } = req.body;
+            const guildId = req.session.selectedGuildId;
+
+            const result = await manager.broadcastEval(async (client, { guildId, reason }) => {
+                const guild = client.guilds.cache.get(guildId);
+                if (!guild) return { error: 'Guild not found' };
+
+                try {
+                    // Get all text channels
+                    const channels = guild.channels.cache.filter(c => c.type === 'GUILD_TEXT');
+                    
+                    // Lock each channel
+                    for (const [_, channel] of channels) {
+                        await channel.permissionOverwrites.edit(guild.roles.everyone, {
+                            SEND_MESSAGES: false
+                        });
+                    }
+
+                    return { success: true, message: 'Server locked down' };
+                } catch (err) {
+                    return { error: err.message };
+                }
+            }, { context: { guildId, reason } });
+
+            const response = result[0];
+            if (response.error) {
+                return res.status(400).json({ error: response.error });
+            }
+            res.json(response);
+        } catch (err) {
+            console.error('Error in lockdown:', err);
+            res.status(500).json({ error: 'Internal server error' });
+        }
+    });
+
+    app.post('/api/clear-chat', isAuthenticated, async (req, res) => {
+        try {
+            const { channelId, amount } = req.body;
+            const guildId = req.session.selectedGuildId;
+
+            const result = await manager.broadcastEval(async (client, { guildId, channelId, amount }) => {
+                const guild = client.guilds.cache.get(guildId);
+                if (!guild) return { error: 'Guild not found' };
+
+                const channel = guild.channels.cache.get(channelId);
+                if (!channel) return { error: 'Channel not found' };
+
+                try {
+                    const messages = await channel.bulkDelete(amount);
+                    return { success: true, message: `Deleted ${messages.size} messages` };
+                } catch (err) {
+                    return { error: err.message };
+                }
+            }, { context: { guildId, channelId, amount } });
+
+            const response = result[0];
+            if (response.error) {
+                return res.status(400).json({ error: response.error });
+            }
+            res.json(response);
+        } catch (err) {
+            console.error('Error in clear chat:', err);
+            res.status(500).json({ error: 'Internal server error' });
+        }
+    });
+
+    app.post('/api/voice-mute-all', isAuthenticated, async (req, res) => {
+        try {
+            const { reason } = req.body;
+            const guildId = req.session.selectedGuildId;
+
+            const result = await manager.broadcastEval(async (client, { guildId, reason }) => {
+                const guild = client.guilds.cache.get(guildId);
+                if (!guild) return { error: 'Guild not found' };
+
+                try {
+                    // Get all members in voice channels
+                    const voiceMembers = guild.members.cache.filter(member => member.voice.channel);
+                    
+                    // Mute each member
+                    for (const [_, member] of voiceMembers) {
+                        await member.voice.setMute(true, reason);
+                    }
+
+                    return { success: true, message: 'All users muted' };
+                } catch (err) {
+                    return { error: err.message };
+                }
+            }, { context: { guildId, reason } });
+
+            const response = result[0];
+            if (response.error) {
+                return res.status(400).json({ error: response.error });
+            }
+            res.json(response);
+        } catch (err) {
+            console.error('Error in voice mute all:', err);
+            res.status(500).json({ error: 'Internal server error' });
+        }
+    });
+
+    app.post('/api/voice-unmute-all', isAuthenticated, async (req, res) => {
+        try {
+            const guildId = req.session.selectedGuildId;
+
+            const result = await manager.broadcastEval(async (client, { guildId }) => {
+                const guild = client.guilds.cache.get(guildId);
+                if (!guild) return { error: 'Guild not found' };
+
+                try {
+                    // Get all members in voice channels
+                    const voiceMembers = guild.members.cache.filter(member => member.voice.channel && member.voice.mute);
+                    
+                    // Unmute each member
+                    for (const [_, member] of voiceMembers) {
+                        await member.voice.setMute(false);
+                    }
+
+                    return { success: true, message: 'All users unmuted' };
+                } catch (err) {
+                    return { error: err.message };
+                }
+            }, { context: { guildId } });
+
+            const response = result[0];
+            if (response.error) {
+                return res.status(400).json({ error: response.error });
+            }
+            res.json(response);
+        } catch (err) {
+            console.error('Error in voice unmute all:', err);
+            res.status(500).json({ error: 'Internal server error' });
+        }
+    });
+
+    // Add user authentication middleware for music features
+    const isMusicAllowed = (req, res, next) => {
+        if (!req.session.user) return res.redirect('/login');
+        next();
+    };
+
+    app.get('/music', isMusicAllowed, (req, res) => {
+        res.sendFile(path.join(__dirname, 'public', 'music-dashboard.html'));
+    });
+
+    app.get('/music/now-playing', isMusicAllowed, async (req, res) => {
+        try {
+            const data = await manager.broadcastEval((client, { userId }) => {
+                const queue = client.queues.get(client.guilds.cache.first()?.id);
+                if (!queue || !queue.songs.length) return null;
+                
+                const currentSong = queue.songs[0];
+                return {
+                    track: {
+                        title: currentSong.title,
+                        artist: currentSong.author,
+                        duration: currentSong.duration,
+                        currentTime: queue.player?.state?.playbackDuration || 0,
+                        thumbnail: currentSong.thumbnail,
+                        requestedBy: currentSong.requestedBy
+                    },
+                    isPlaying: queue.playing,
+                    canControl: currentSong.requestedBy === userId || client.isAdmin(userId)
+                };
+            }, { context: { userId: req.session.user.id } });
+            res.json(data.find(d => d) || { track: null, isPlaying: false, canControl: false });
+        } catch (error) {
+            res.status(500).json({ error: 'Failed to fetch now playing' });
+            logger.error('Now playing endpoint error:', error);
+        }
+    });
+
+    app.get('/music/queue', isMusicAllowed, async (req, res) => {
+        try {
+            const data = await manager.broadcastEval((client, { userId }) => {
+                const queue = client.queues.get(client.guilds.cache.first()?.id);
+                if (!queue || !queue.songs.length) return { queue: [] };
+                
+                // Skip the first song as it's the currently playing one
+                const queueSongs = queue.songs.slice(1);
+                return {
+                    queue: queueSongs.map(song => ({
+                        title: song.title,
+                        artist: song.author,
+                        duration: song.duration,
+                        requestedBy: song.requestedBy,
+                        canControl: song.requestedBy === userId || client.isAdmin(userId)
+                    }))
+                };
+            }, { context: { userId: req.session.user.id } });
+            res.json(data.find(d => d) || { queue: [] });
+        } catch (error) {
+            res.status(500).json({ error: 'Failed to fetch queue' });
+            logger.error('Queue endpoint error:', error);
+        }
+    });
+
+    app.post('/music/toggle-playback', isAdminAuthenticated, async (req, res) => {
+        try {
+            const result = await manager.broadcastEval(client => {
+                const queue = client.queues.get(client.guilds.cache.first()?.id);
+                if (!queue || !queue.songs.length) return { error: 'No active player' };
+                
+                if (queue.playing) {
+                    queue.player.pause();
+                    queue.playing = false;
+                } else {
+                    queue.player.unpause();
+                    queue.playing = true;
+                }
+                client.queues.set(client.guilds.cache.first()?.id, queue);
+                return { isPlaying: queue.playing };
+            });
+            res.json(result.find(r => r.isPlaying !== undefined) || { error: 'Failed to toggle playback' });
+        } catch (error) {
+            res.status(500).json({ error: 'Failed to toggle playback' });
+            logger.error('Toggle playback endpoint error:', error);
+        }
+    });
+
+    app.post('/music/volume', isAdminAuthenticated, async (req, res) => {
+        const { volume } = req.body;
+        if (typeof volume !== 'number' || volume < 0 || volume > 100) {
+            return res.status(400).json({ error: 'Invalid volume' });
+        }
+        try {
+            await manager.broadcastEval((client, { volume }) => {
+                const queue = client.queues.get(client.guilds.cache.first()?.id);
+                if (queue && queue.player) {
+                    queue.volume = volume / 100;
+                    if (queue.player.state.resource) {
+                        queue.player.state.resource.volume.setVolume(queue.volume);
+                    }
+                }
+            }, { context: { volume } });
+            res.json({ success: true });
+        } catch (error) {
+            res.status(500).json({ error: 'Failed to set volume' });
+            logger.error('Volume endpoint error:', error);
+        }
+    });
+
+    app.post('/music/add-to-queue', isMusicAllowed, async (req, res) => {
+        const { query } = req.body;
+        if (!query) return res.status(400).json({ error: 'Query required' });
+        try {
+            const result = await manager.broadcastEval(async (client, { query, userId }) => {
+                const guildId = client.guilds.cache.first()?.id;
+                if (!guildId) return { error: 'No guild available' };
+                
+                const command = client.commands.get('play');
+                if (!command) return { error: 'Play command not found' };
+                
+                try {
+                    // Get the guild and member
+                    const guild = client.guilds.cache.first();
+                    const member = await guild.members.fetch(userId);
+                    
+                    // Create a mock interaction for search
+                    const mockInteraction = {
+                        guildId: guildId,
+                        guild: guild,
+                        member: member,
+                        user: member.user,
+                        channel: guild.channels.cache.find(c => c.type === 0),
+                        options: {
+                            getString: (name) => name === 'query' ? query : null,
+                            getSubcommand: () => null
+                        },
+                        reply: async (msg) => {
+                            if (typeof msg === 'string') {
+                                return { content: msg };
+                            }
+                            return msg;
+                        },
+                        editReply: async (msg) => {
+                            if (typeof msg === 'string') {
+                                return { content: msg };
+                            }
+                            return msg;
+                        },
+                        deferReply: async () => ({ deferred: true }),
+                        followUp: async (msg) => {
+                            if (typeof msg === 'string') {
+                                return { content: msg };
+                            }
+                            return msg;
+                        },
+                        isCommand: () => true,
+                        isChatInputCommand: () => true,
+                        commandName: 'play'
+                    };
+
+                    // Execute the play command directly
+                    try {
+                        await command.execute(mockInteraction, client);
+                    } catch (error) {
+                        logger.error('Play command error:', error);
+                        return { error: 'Failed to execute play command: ' + error.message };
+                    }
+
+                    // Get the queue to check what was added
+                    const queue = client.queues.get(guildId);
+                    if (!queue || !queue.songs.length) {
+                        return { error: 'Failed to add song to queue' };
+                    }
+
+                    // Get the last added song
+                    const song = queue.songs[queue.songs.length - 1];
+                    
+                    return { 
+                        success: true, 
+                        track: { 
+                            title: song.title,
+                            artist: song.author,
+                            duration: song.duration
+                        } 
+                    };
+                } catch (error) {
+                    return { error: error.message || 'Failed to add song' };
+                }
+            }, { context: { query, userId: req.session.user.id } });
+            
+            res.json(result.find(r => r.success) || result.find(r => r.error) || { error: 'Failed to add to queue' });
+        } catch (error) {
+            res.status(500).json({ error: 'Failed to add to queue' });
+            logger.error('Add to queue endpoint error:', error);
+        }
+    });
+
+    app.post('/music/remove-from-queue', isMusicAllowed, async (req, res) => {
+        const { index } = req.body;
+        if (index === undefined || typeof index !== 'number') {
+            return res.status(400).json({ error: 'Valid queue index required' });
+        }
+        
+        try {
+            const result = await manager.broadcastEval(async (client, { index, userId }) => {
+                const queue = client.queues.get(client.guilds.cache.first()?.id);
+                if (!queue || !queue.songs.length) return { error: 'No active queue' };
+                
+                // Adjust index since we show queue without the current song
+                const actualIndex = index + 1;
+                
+                // Check if index is valid
+                if (actualIndex < 1 || actualIndex >= queue.songs.length) {
+                    return { error: 'Invalid queue index' };
+                }
+                
+                // Check permissions
+                const song = queue.songs[actualIndex];
+                if (song.requestedBy !== userId && !client.isAdmin(userId)) {
+                    return { error: 'Not authorized to remove this song' };
+                }
+                
+                // Remove the song
+                queue.songs.splice(actualIndex, 1);
+                return { success: true };
+            }, { context: { index, userId: req.session.user.id } });
+            
+            res.json(result.find(r => r.success) || result.find(r => r.error) || { error: 'Failed to remove from queue' });
+        } catch (error) {
+            res.status(500).json({ error: 'Failed to remove from queue' });
+            logger.error('Remove from queue endpoint error:', error);
+        }
+    });
+
+    app.post('/music/next', isMusicAllowed, async (req, res) => {
+        try {
+            const result = await manager.broadcastEval(async (client, { userId }) => {
+                const queue = client.queues.get(client.guilds.cache.first()?.id);
+                if (!queue || !queue.songs.length) return { error: 'No active queue' };
+                
+                const currentSong = queue.songs[0];
+                if (currentSong.requestedBy !== userId && !client.isAdmin(userId)) {
+                    return { error: 'Not authorized to skip this song' };
+                }
+
+                // Use the skip command's functionality
+                const command = client.commands.get('skip');
+                if (!command) return { error: 'Skip command not found' };
+
+                queue.isSkipping = true;
+                if (queue.player) {
+                    queue.player.stop();
+                }
+                if (queue.liveProcess) {
+                    queue.liveProcess.kill('SIGTERM');
+                    queue.liveProcess = null;
+                }
+
+                // Remove current song and add to history
+                const skippedSong = queue.songs.shift();
+                if (skippedSong && !skippedSong.isLive) {
+                    queue.history.unshift(skippedSong);
+                }
+
+                // Start playing next song if queue not empty
+                if (queue.songs.length > 0) {
+                    const playCommand = client.commands.get('play');
+                    if (!playCommand) return { error: 'Play command not found' };
+                    await playCommand.playSong(client.guilds.cache.first()?.id, queue, null, client);
+                } else {
+                    queue.playing = false;
+                    queue.isSkipping = false;
+                    if (queue.connection && !queue.connection.state.status === 'destroyed') {
+                        queue.connection.destroy();
+                    }
+                    client.queues.delete(client.guilds.cache.first()?.id);
+                }
+
+                return { success: true };
+            }, { context: { userId: req.session.user.id } });
+            res.json(result.find(r => r.success) || result.find(r => r.error) || { error: 'Failed to skip song' });
+        } catch (error) {
+            res.status(500).json({ error: 'Failed to skip song' });
+            logger.error('Next track endpoint error:', error);
+        }
+    });
+
+    app.post('/music/previous', isMusicAllowed, async (req, res) => {
+        try {
+            const result = await manager.broadcastEval(async (client, { userId }) => {
+                const queue = client.queues.get(client.guilds.cache.first()?.id);
+                if (!queue || !queue.songs.length) return { error: 'No active queue' };
+                
+                // Check permissions
+                if (!client.isAdmin(userId)) {
+                    return { error: 'Not authorized to go to previous song' };
+                }
+                
+                // Check if there's a previous song
+                if (!queue.history || queue.history.length === 0) {
+                    return { error: 'No previous song available' };
+                }
+                
+                // Get the most recent previous song
+                const previousSong = queue.history[0];
+                
+                // Add current song to the beginning of the queue
+                if (queue.songs[0]) {
+                    queue.songs.unshift(queue.songs[0]);
+                }
+                
+                // Set the previous song as current
+                queue.songs[0] = previousSong;
+                queue.history.shift(); // Remove the song from history
+                
+                // Stop current playback
+                if (queue.player) {
+                    queue.player.stop();
+                }
+                if (queue.liveProcess) {
+                    queue.liveProcess.kill('SIGTERM');
+                    queue.liveProcess = null;
+                }
+
+                // Start playing the previous song
+                const playCommand = client.commands.get('play');
+                if (!playCommand) return { error: 'Play command not found' };
+                await playCommand.playSong(client.guilds.cache.first()?.id, queue, null, client);
+                
+                return { success: true };
+            }, { context: { userId: req.session.user.id } });
+            res.json(result.find(r => r.success) || result.find(r => r.error) || { error: 'Failed to go to previous song' });
+        } catch (error) {
+            res.status(500).json({ error: 'Failed to go to previous song' });
+            logger.error('Previous track endpoint error:', error);
+        }
     });
 
     app.get('/health', isAdminAuthenticated, async (req, res) => {
@@ -220,33 +805,109 @@ function start(shardingManager) {
 
     app.get('/users', isAdminAuthenticated, async (req, res) => {
         const guildId = req.session.selectedGuildId;
+        const cacheKey = `users_${guildId}`;
+
         try {
+            // Try to get from cache first
+            let cachedData = userCache.get(cacheKey);
+            if (cachedData) {
+                return res.json(cachedData);
+            }
+
             const guildData = await manager.broadcastEval(async (client, { guildId }) => {
                 const guild = client.guilds.cache.get(guildId);
                 if (!guild) return null;
-                await guild.members.fetch({ force: true });
-                const roles = guild.roles.cache.map(role => ({
-                    id: role.id,
-                    name: role.name,
-                    position: role.position
-                }));
-                const members = guild.members.cache.map(member => ({
-                    id: member.user.id,
-                    username: member.user.username,
-                    discriminator: member.user.discriminator,
-                    avatar: member.user.avatar ? `https://cdn.discordapp.com/avatars/${member.user.id}/${member.user.avatar}.png` : null,
-                    status: member.presence?.status || 'offline',
-                    roles: member.roles.cache.map(role => ({ id: role.id, name: role.name, position: role.position })),
-                    activity: member.presence?.activities[0]?.name ? `Playing ${member.presence.activities[0].name}` : null,
-                    isOwner: member.id === guild.ownerId
-                }));
-                return { members, roles, memberCount: guild.memberCount };
+
+                try {
+                    // Fetch all members with presence data
+                    await guild.members.fetch({ withPresences: true, force: true });
+                    
+                    // Get all roles first
+                    const roles = Array.from(guild.roles.cache.values())
+                        .sort((a, b) => b.position - a.position)
+                        .map(role => ({
+                            id: role.id,
+                            name: role.name,
+                            color: role.hexColor !== '#000000' ? role.hexColor : null,
+                            position: role.position,
+                            permissions: role.permissions.toArray()
+                        }));
+
+                    // Map members with their roles
+                    const members = Array.from(guild.members.cache.values()).map(member => ({
+                        id: member.user.id,
+                        username: member.user.username,
+                        discriminator: member.user.discriminator,
+                        avatar: member.user.avatar ? `https://cdn.discordapp.com/avatars/${member.user.id}/${member.user.avatar}.png` : null,
+                        status: member.presence?.status || 'offline',
+                        roles: member.roles.cache
+                            .sort((a, b) => b.position - a.position)
+                            .map(role => ({
+                                id: role.id,
+                                name: role.name,
+                                color: role.hexColor !== '#000000' ? role.hexColor : null,
+                                position: role.position,
+                                permissions: role.permissions.toArray()
+                            }))
+                            .filter(role => role.name !== '@everyone'),
+                        activity: member.presence?.activities[0] ? {
+                            name: member.presence.activities[0].name,
+                            type: member.presence.activities[0].type,
+                            state: member.presence.activities[0].state
+                        } : null,
+                        joinedAt: member.joinedTimestamp,
+                        isOwner: member.id === guild.ownerId,
+                        isBoosting: member.premiumSince !== null,
+                        nickname: member.nickname
+                    }));
+
+                    return {
+                        members,
+                        roles,
+                        memberCount: guild.memberCount,
+                        success: true
+                    };
+                } catch (err) {
+                    console.error('Error fetching guild members:', err);
+                    return { error: err.message };
+                }
             }, { context: { guildId } });
-            const data = guildData.find(d => d) || { members: [], roles: [], memberCount: 0 };
-            res.json({ members: data.members, roles: data.roles, totalMembers: data.memberCount });
+
+            const data = guildData.find(d => d?.success) || { members: [], roles: [], memberCount: 0 };
+            
+            if (!data.success) {
+                throw new Error('Failed to fetch users from any shard');
+            }
+
+            // Sort members by status and role position
+            data.members.sort((a, b) => {
+                const statusOrder = { online: 0, idle: 1, dnd: 2, offline: 3 };
+                if (statusOrder[a.status] !== statusOrder[b.status]) {
+                    return statusOrder[a.status] - statusOrder[b.status];
+                }
+                const aHighestRole = Math.max(...a.roles.map(r => r.position), 0);
+                const bHighestRole = Math.max(...b.roles.map(r => r.position), 0);
+                return bHighestRole - aHighestRole;
+            });
+
+            // Cache the result
+            userCache.set(cacheKey, data);
+            
+            res.json(data);
         } catch (error) {
-            res.status(500).json({ error: 'Failed to fetch users' });
-            logger.error('Users endpoint error:', error);
+            console.error('Users endpoint error:', error);
+            
+            // If we have cached data and there's an error, return cached data
+            const cachedData = userCache.get(cacheKey);
+            if (cachedData) {
+                console.log('Returning cached user data due to error');
+                return res.json(cachedData);
+            }
+            
+            res.status(500).json({ 
+                error: 'Failed to fetch users',
+                details: error.message
+            });
         }
     });
 
@@ -362,9 +1023,11 @@ function start(shardingManager) {
         }
     });
 
-    https.createServer(options, app).listen(process.env.WEB_PORT, () => {
-        logger.info(`Web dashboard running on HTTPS port ${process.env.WEB_PORT}`);
+    server.listen(port, () => {
+        logger.info(`Dashboard listening on port ${port}`);
     });
+
+    return app;
 }
 
 module.exports = { start };

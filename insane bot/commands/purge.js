@@ -1,67 +1,145 @@
-const { SlashCommandBuilder, EmbedBuilder, PermissionsBitField } = require('discord.js');
+const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
+const logger = require('../utils/logger');
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('purge')
-    .setDescription('Delete messages.')
-    .addIntegerOption(option => 
+    .setDescription('Delete multiple messages at once')
+    .addIntegerOption(option =>
       option.setName('amount')
-        .setDescription('Number of messages (max 10000)')
-        .setRequired(true)
+        .setDescription('Number of messages to delete (max 10000)')
         .setMinValue(1)
         .setMaxValue(10000)
-    ),
-  cooldown: 5,
+        .setRequired(true))
+    .addUserOption(option =>
+      option.setName('user')
+        .setDescription('Only delete messages from this user')
+        .setRequired(false))
+    .addStringOption(option =>
+      option.setName('contains')
+        .setDescription('Only delete messages containing this text')
+        .setRequired(false))
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages),
+
+  cooldown: 3,
+
   async execute(interaction, client) {
-    if (!interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
-      return interaction.reply({ content: 'You need Manage Messages permissions!', ephemeral: true });
-    }
-
-    const amount = interaction.options.getInteger('amount');
-    
-    // Defer reply since large purges might take time
-    await interaction.deferReply({ ephemeral: true });
-
     try {
+      const amount = interaction.options.getInteger('amount');
+      const user = interaction.options.getUser('user');
+      const contains = interaction.options.getString('contains')?.toLowerCase();
+
+      // Defer the reply since this might take a while
+      await interaction.deferReply({ ephemeral: true });
+
       let totalDeleted = 0;
-      
-      // If amount is less than 100, do a single delete
-      if (amount <= 100) {
-        const deleted = await interaction.channel.bulkDelete(amount, true);
-        totalDeleted = deleted.size;
-      } else {
-        // For larger amounts, delete in batches of 100
-        const batches = Math.ceil(amount / 100);
-        
-        for (let i = 0; i < batches && totalDeleted < amount; i++) {
-          const messagesToDelete = Math.min(100, amount - totalDeleted);
-          const deleted = await interaction.channel.bulkDelete(messagesToDelete, true);
-          totalDeleted += deleted.size;
-          
-          // Small delay between batches to prevent rate limiting
-          if (i < batches - 1) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
+      let failedBatches = 0;
+      const batchSize = 100; // Discord's limit per deletion
+      let lastMessageId = null;
+
+      // Keep fetching and deleting messages until we reach the desired amount
+      while (totalDeleted < amount) {
+        try {
+          // Calculate how many messages to fetch in this batch
+          const remaining = amount - totalDeleted;
+          const fetchAmount = Math.min(remaining, batchSize);
+
+          // Fetch messages
+          const messages = await interaction.channel.messages.fetch({
+            limit: fetchAmount,
+            before: lastMessageId || undefined
+          });
+
+          if (messages.size === 0) break; // No more messages to delete
+
+          // Filter messages if needed
+          let filteredMessages = messages;
+          if (user || contains) {
+            filteredMessages = messages.filter(msg => {
+              const matchesUser = user ? msg.author.id === user.id : true;
+              const matchesContent = contains ? msg.content.toLowerCase().includes(contains) : true;
+              const isNotTooOld = msg.createdTimestamp > Date.now() - 1209600000; // 14 days
+              return matchesUser && matchesContent && isNotTooOld;
+            });
           }
+
+          if (filteredMessages.size === 0) {
+            // If no messages match our criteria, update lastMessageId and continue
+            lastMessageId = messages.last().id;
+            continue;
+          }
+
+          // Delete the filtered messages
+          const deleted = await interaction.channel.bulkDelete(filteredMessages, true)
+            .catch(error => {
+              logger.error(`Error in purge batch: ${error}`);
+              failedBatches++;
+              return null;
+            });
+
+          if (deleted) {
+            totalDeleted += deleted.size;
+            lastMessageId = messages.last().id;
+
+            // Progress update every 500 messages
+            if (totalDeleted % 500 === 0 || totalDeleted === amount) {
+              await interaction.editReply({
+                content: `🗑️ Progress: ${totalDeleted}/${amount} messages deleted...`,
+                ephemeral: true
+              });
+            }
+          }
+
+          // Small delay to prevent rate limiting
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        } catch (error) {
+          logger.error(`Error in purge loop: ${error}`);
+          break;
         }
       }
 
-      const embed = new EmbedBuilder()
-        .setTitle('Messages Purged')
-        .setDescription(`Deleted ${totalDeleted} messages.\nRequested: ${amount}`)
-        .setColor('#FF4500')
-        .setTimestamp()
-        .setFooter({ text: totalDeleted < amount ? 'Some messages couldn\'t be deleted (possibly older than 14 days)' : 'Purge completed' });
+      // Send final result
+      const finalMessage = totalDeleted > 0
+        ? `✅ Successfully deleted ${totalDeleted} message${totalDeleted !== 1 ? 's' : ''}.${failedBatches > 0 ? `\n⚠️ ${failedBatches} batch(es) failed to delete.` : ''}`
+        : '❌ No messages were found matching your criteria or they were too old to delete.';
 
-      await interaction.editReply({ embeds: [embed] });
+      await interaction.editReply({
+        content: finalMessage,
+        ephemeral: true
+      });
 
+      // Log the action
+      logger.info(`${interaction.user.tag} purged ${totalDeleted} messages in #${interaction.channel.name}`);
+
+      // Send to audit log if configured
+      const modlogChannelId = client.settings.get(`${interaction.guild.id}:modlog`);
+      if (modlogChannelId) {
+        const modlogChannel = await interaction.guild.channels.fetch(modlogChannelId);
+        if (modlogChannel) {
+          await modlogChannel.send({
+            content: `🗑️ **Purge Action**\n` +
+              `**Moderator:** ${interaction.user.tag}\n` +
+              `**Channel:** ${interaction.channel.name}\n` +
+              `**Messages Deleted:** ${totalDeleted}\n` +
+              `**Filters:** ${[
+                user ? `User: ${user.tag}` : null,
+                contains ? `Contains: "${contains}"` : null
+              ].filter(Boolean).join(', ') || 'None'}`
+          });
+        }
+      }
     } catch (error) {
-      console.error(error);
-      const errorEmbed = new EmbedBuilder()
-        .setTitle('Purge Error')
-        .setDescription('An error occurred while purging messages.')
-        .setColor('#FF0000')
-        .setTimestamp();
-      await interaction.editReply({ embeds: [errorEmbed] });
+      logger.error('Error in purge command:', error);
+      const errorMessage = {
+        content: '❌ An error occurred while purging messages. Please try again.',
+        ephemeral: true
+      };
+
+      if (interaction.deferred) {
+        await interaction.editReply(errorMessage);
+      } else {
+        await interaction.reply(errorMessage);
+      }
     }
-  },
+  }
 };

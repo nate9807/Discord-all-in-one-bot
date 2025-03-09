@@ -1,0 +1,66 @@
+[2025-03-08T22:24:20.951Z] [INFO] Loaded settings from /var/www/mizmix-bot/data/settings.json
+[2025-03-08T22:24:21.001Z] [INFO] Loaded command: announcewhenlive
+[2025-03-08T22:24:21.003Z] [INFO] Loaded command: announce
+[2025-03-08T22:24:21.004Z] [INFO] Loaded command: setautomod
+[2025-03-08T22:24:21.005Z] [INFO] Loaded command: automodconfig
+[2025-03-08T22:24:21.006Z] [INFO] Loaded command: autorole
+[2025-03-08T22:24:21.008Z] [INFO] Loaded command: ban
+[2025-03-08T22:24:21.010Z] [INFO] Loaded command: bumpreminder
+[2025-03-08T22:24:21.011Z] [INFO] Loaded command: help
+[2025-03-08T22:24:21.014Z] [INFO] Loaded command: joinservermessage
+[2025-03-08T22:24:21.017Z] [INFO] Loaded command: jointocreatevc
+[2025-03-08T22:24:21.018Z] [INFO] Loaded command: kick
+[2025-03-08T22:24:21.019Z] [INFO] Loaded command: leaveservermessage
+[2025-03-08T22:24:21.020Z] [INFO] Loaded command: loop
+[2025-03-08T22:24:21.022Z] [INFO] Loaded command: mute
+[2025-03-08T22:24:21.023Z] [INFO] Loaded command: pause
+[2025-03-08T22:24:21.944Z] [INFO] Loaded command: play
+[2025-03-08T22:24:21.945Z] [INFO] Loaded command: purge
+[2025-03-08T22:24:21.946Z] [INFO] Loaded command: queue
+[2025-03-08T22:24:21.949Z] [INFO] Loaded command: reactionroles
+[2025-03-08T22:24:21.950Z] [INFO] Loaded command: restart
+[2025-03-08T22:24:21.951Z] [INFO] Loaded command: resume
+[2025-03-08T22:24:21.952Z] [INFO] Loaded command: seek
+[2025-03-08T22:24:21.954Z] [INFO] Initializing server stats listeners...
+[2025-03-08T22:24:21.954Z] [INFO] Loaded command: setupserverstats
+[2025-03-08T22:24:21.955Z] [INFO] Loaded command: setmodlog
+[2025-03-08T22:24:21.955Z] [INFO] Loaded command: shuffle
+[2025-03-08T22:24:21.956Z] [INFO] Loaded command: skip
+[2025-03-08T22:24:21.957Z] [INFO] Loaded command: stop
+[2025-03-08T22:24:21.958Z] [INFO] Loaded command: unban
+[2025-03-08T22:24:21.959Z] [INFO] Loaded command: volume
+[2025-03-08T22:24:21.959Z] [INFO] Loaded command: warn
+[2025-03-08T22:24:21.960Z] [INFO] Loaded event: messageCreate
+[2025-03-08T22:24:21.961Z] [INFO] Loaded event: ready
+[2025-03-08T22:24:21.962Z] [INFO] Loaded event: voiceStateUpdate
+[2025-03-08T22:24:21.962Z] [INFO] Shard undefined attempting to login...
+[2025-03-08T22:24:22.017Z] [INFO] No reactionmessages.json found, starting fresh.
+[2025-03-08T22:24:22.640Z] [INFO] Shard 0 logged in successfully with 1 guilds
+[2025-03-08T22:24:22.677Z] [INFO] Scheduling next reminder for guild 891224129364193290 in 105.90178333333333 minutes (at 3/8/2025, 7:10:16 PM)
+[2025-03-08T22:24:22.678Z] [INFO] Set status to "Playing Starting Bot" on shard 0
+[2025-03-08T22:24:23.680Z] [INFO] Set status to "Playing Starting Bot." on shard 0
+[2025-03-08T22:24:24.682Z] [INFO] Set status to "Playing Starting Bot.." on shard 0
+[2025-03-08T22:24:25.683Z] [INFO] Set status to "Playing Starting Bot..." on shard 0
+[2025-03-08T22:24:40.687Z] [INFO] Set status to "Playing Loading Commands" on shard 0
+[2025-03-08T22:24:41.690Z] [INFO] Set status to "Playing Loading Commands." on shard 0
+[2025-03-08T22:24:42.691Z] [INFO] Set status to "Playing Loading Commands.." on shard 0
+[2025-03-08T22:24:42.746Z] [INFO] Executing command: play
+[2025-03-08T22:24:42.987Z] [INFO] Message received: "" from Bot Boi#8398 (1345144036960505896) in 📌┃bump-here at 2025-03-08T22:24:42.987Z
+[2025-03-08T22:24:43.100Z] [INFO] Voice state update: User Bot Boi#8398 in guild 891224129364193290, channel 1348020282610159616
+[2025-03-08T22:24:43.228Z] [INFO] Message received: "" from Bot Boi#8398 (1345144036960505896) in 📌┃mod-log at 2025-03-08T22:24:43.228Z
+[2025-03-08T22:24:43.247Z] [INFO] Logged Voice Channel Joined for Bot Boi#8398 in guild 891224129364193290
+[2025-03-08T22:24:43.693Z] [INFO] Set status to "Playing Loading Commands..." on shard 0
+[2025-03-08T22:24:43.841Z] [INFO] Stream initialized for "SABATON Live Stream ⦁ 24/7 ⦁ Best of Heavy Metal ⦁ Non-stop Headbanging ⦁ New & Old Releases" in guild 891224129364193290
+[2025-03-08T22:24:44.015Z] [INFO] Command play executed with result: undefined
+[2025-03-08T22:24:44.015Z] [INFO] Saved settings to /var/www/mizmix-bot/data/settings.json
+[2025-03-08T22:24:47.989Z] [INFO] Player state changed to Playing in guild 891224129364193290
+[2025-03-08T22:24:58.693Z] [INFO] Set status to "Playing Syncing Settings" on shard 0
+[2025-03-08T22:24:59.695Z] [INFO] Set status to "Playing Syncing Settings." on shard 0
+[2025-03-08T22:25:00.708Z] [INFO] Set status to "Playing Syncing Settings.." on shard 0
+[2025-03-08T22:25:01.710Z] [INFO] Set status to "Playing Syncing Settings..." on shard 0
+[2025-03-08T22:25:16.710Z] [INFO] Set status to "Playing Ready to Serve" on shard 0
+[2025-03-08T22:25:17.712Z] [INFO] Set status to "Playing Ready to Serve." on shard 0
+[2025-03-08T22:25:18.713Z] [INFO] Set status to "Playing Ready to Serve.." on shard 0
+[2025-03-08T22:25:19.713Z] [INFO] Set status to "Playing Ready to Serve..." on shard 0
+[2025-03-08T22:25:34.714Z] [INFO] Set status to "Playing Serving MizMix!!" on shard 0
+[2025-03-08T22:26:34.715Z] [INFO] Set status to "Playing Use /play!!" on shard 0

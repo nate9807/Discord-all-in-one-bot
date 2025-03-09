@@ -1,6 +1,6 @@
 require('dotenv').config();
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
-const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus } = require('@discordjs/voice');
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus, entersState } = require('@discordjs/voice');
 const ytdl = require('@distube/ytdl-core');
 const youtubedl = require('youtube-dl-exec');
 const ytSearch = require('yt-search');
@@ -20,6 +20,7 @@ async function execute(interaction, client) {
   const channel = interaction.channel;
 
   if (!member.voice.channel) {
+    logger.warn(`Play command failed: User not in voice channel in guild ${guildId}`);
     return interaction.editReply({ content: 'Join a voice channel first!' });
   }
 
@@ -35,26 +36,55 @@ async function execute(interaction, client) {
     history: [],
     repeatMode: 'off',
     liveProcess: null,
-    isSkipping: false
+    isSkipping: false,
+    effects: {
+      bassboost: false,
+      nightcore: false,
+      vaporwave: false
+    }
   };
 
   if (!queue.connection) {
-    queue.connection = joinVoiceChannel({
-      channelId: member.voice.channel.id,
-      guildId: guildId,
-      adapterCreator: interaction.guild.voiceAdapterCreator,
-    });
-    queue.connection.on(VoiceConnectionStatus.Disconnected, () => {
-      logger.info(`Disconnected from voice channel in guild ${guildId}`);
-      cleanupQueue(guildId, client);
-    });
-    queue.player = createAudioPlayer({
-      behaviors: { noSubscriber: 'play' }
-    });
-    queue.connection.subscribe(queue.player);
-    setupPlayerListeners(guildId, queue, channel, client);
-    client.queues.set(guildId, queue);
-    logger.info(`Joined voice channel in guild ${guildId}`);
+    try {
+      queue.connection = joinVoiceChannel({
+        channelId: member.voice.channel.id,
+        guildId: guildId,
+        adapterCreator: interaction.guild.voiceAdapterCreator,
+      });
+
+      queue.connection.on(VoiceConnectionStatus.Disconnected, async () => {
+        logger.music(`Disconnected from voice channel in guild ${guildId}`);
+        try {
+          await Promise.race([
+            entersState(queue.connection, VoiceConnectionStatus.Signalling, 5_000),
+            entersState(queue.connection, VoiceConnectionStatus.Connecting, 5_000),
+          ]);
+          // Seems to be reconnecting to a new channel
+          logger.music(`Attempting to reconnect in guild ${guildId}`);
+        } catch (error) {
+          // Seems to be a real disconnect which SHOULDN'T be recovered from
+          logger.music(`Cleaning up connection in guild ${guildId}`);
+          cleanupQueue(guildId, client);
+        }
+      });
+
+      queue.connection.on(VoiceConnectionStatus.Destroyed, () => {
+        logger.music(`Voice connection destroyed in guild ${guildId}`);
+        cleanupQueue(guildId, client);
+      });
+
+      queue.player = createAudioPlayer({
+        behaviors: { noSubscriber: 'play' }
+      });
+
+      queue.connection.subscribe(queue.player);
+      setupPlayerListeners(guildId, queue, channel, client);
+      client.queues.set(guildId, queue);
+      logger.music(`Joined voice channel in guild ${guildId}`);
+    } catch (error) {
+      logger.error(`Failed to join voice channel in guild ${guildId}:`, error);
+      return interaction.editReply({ content: 'Failed to join voice channel. Please try again.' });
+    }
   }
 
   try {
@@ -62,42 +92,56 @@ async function execute(interaction, client) {
     let song;
 
     if (ytdl.validateURL(query)) {
-      const videoId = extractVideoId(query);
-      const response = await youtube.videos.list({
-        part: 'snippet,contentDetails,liveStreamingDetails',
-        id: videoId
-      });
-      const video = response.data.items[0];
-      if (!video) throw new Error('Video not found');
+      try {
+        const videoId = extractVideoId(query);
+        const response = await youtube.videos.list({
+          part: 'snippet,contentDetails,liveStreamingDetails',
+          id: videoId
+        });
+        const video = response.data.items[0];
+        if (!video) throw new Error('Video not found');
 
-      const isLive = !!video.liveStreamingDetails;
-      logger.warn(`Video "${video.snippet.title}" isLive: ${isLive}`);
+        const isLive = !!video.liveStreamingDetails;
+        logger.music(`Video "${video.snippet.title}" isLive: ${isLive} in guild ${guildId}`);
 
-      song = {
-        title: video.snippet.title,
-        url: `https://www.youtube.com/watch?v=${videoId}`,
-        duration: isLive ? Infinity : parseDuration(video.contentDetails.duration),
-        author: video.snippet.channelTitle,
-        thumbnail: video.snippet.thumbnails.default?.url || null,
-        isLive: isLive
-      };
+        song = {
+          title: video.snippet.title,
+          url: `https://www.youtube.com/watch?v=${videoId}`,
+          duration: isLive ? Infinity : parseDuration(video.contentDetails.duration),
+          author: video.snippet.channelTitle,
+          thumbnail: video.snippet.thumbnails.default?.url || null,
+          isLive: isLive,
+          requestedBy: interaction.user.tag
+        };
+      } catch (error) {
+        logger.error(`Failed to fetch video info in guild ${guildId}:`, error);
+        throw new Error('Failed to fetch video information. Please try again.');
+      }
     } else {
-      logger.info(`Searching for: ${query}`);
-      const result = await ytSearch(query);
-      if (!result.videos.length) throw new Error('No results found');
-      song = {
-        title: result.videos[0].title,
-        url: result.videos[0].url,
-        duration: result.videos[0].duration.seconds,
-        author: result.videos[0].author.name,
-        thumbnail: result.videos[0].thumbnail,
-        isLive: false
-      };
+      try {
+        logger.music(`Searching for: "${query}" in guild ${guildId}`);
+        const result = await ytSearch(query);
+        if (!result.videos.length) throw new Error('No results found');
+        
+        song = {
+          title: result.videos[0].title,
+          url: result.videos[0].url,
+          duration: result.videos[0].duration.seconds,
+          author: result.videos[0].author.name,
+          thumbnail: result.videos[0].thumbnail,
+          isLive: false,
+          requestedBy: interaction.user.tag
+        };
+      } catch (error) {
+        logger.error(`Search failed in guild ${guildId}:`, error);
+        throw new Error('Failed to search for the song. Please try again.');
+      }
     }
 
+    // Add song to queue
     queue.songs.push(song);
     client.queues.set(guildId, queue);
-    logger.info(`Added ${song.isLive ? 'live stream' : 'song'} "${song.title}" to queue in guild ${guildId}`);
+    logger.music(`Added ${song.isLive ? 'live stream' : 'song'} "${song.title}" to queue in guild ${guildId} by ${song.requestedBy}`);
 
     const embed = new EmbedBuilder()
       .setColor(song.isLive ? '#FF0000' : '#00FFFF')
@@ -106,19 +150,24 @@ async function execute(interaction, client) {
       .setDescription(`**${song.title}** by ${song.author}${song.isLive ? '\nPlaying continuously until skipped...' : ''}`)
       .addFields(
         { name: song.isLive ? 'Status' : 'Duration', value: song.isLive ? 'LIVE' : formatDuration(song.duration), inline: true },
-        { name: 'Position', value: `${queue.songs.length}`, inline: true }
+        { name: 'Position', value: `${queue.songs.length}`, inline: true },
+        { name: 'Requested By', value: song.requestedBy, inline: true }
       )
       .setTimestamp();
+    
     await interaction.editReply({ embeds: [embed] });
 
     if (!queue.playing) {
-      logger.info(`Starting playback for guild ${guildId} from execute`);
+      logger.music(`Starting playback for guild ${guildId}`);
       await playSong(guildId, queue, channel, client);
     }
 
   } catch (error) {
-    logger.error('Play command error:', error.message || error);
-    await interaction.editReply({ content: `Failed to play: ${error.message || 'Unknown error'}` });
+    logger.error(`Play command error in guild ${guildId}:`, error);
+    await interaction.editReply({ 
+      content: `Failed to play: ${error.message || 'An unexpected error occurred'}. Please try again.`,
+      ephemeral: true 
+    });
   }
 }
 
@@ -128,7 +177,7 @@ async function playSong(guildId, queue, channel, client) {
     queue.playing = false;
     queue.isSkipping = false;
     client.queues.set(guildId, queue);
-    logger.info(`Queue empty in guild ${guildId}, ending playback`);
+    logger.music(`Queue empty in guild ${guildId}, ending playback`);
     const embed = new EmbedBuilder()
       .setColor('#00FFFF')
       .setTitle('Queue Ended')
@@ -216,7 +265,7 @@ async function playSong(guildId, queue, channel, client) {
         logger.info(`Ignoring premature close error for "${song.title}" in guild ${guildId} during skip`);
         return;
       }
-      logger.error(`Stream error for "${song.title}" in guild ${guildId}:`, err.message);
+      logger.error(`Stream error for "${song.title}" in guild ${guildId}:`, err);
       if (!queue.isSkipping) {
         channel.send({ content: `Stream error: ${err.message}, skipping...` });
         skipSong(guildId, queue, channel, client);
@@ -229,10 +278,10 @@ async function playSong(guildId, queue, channel, client) {
     queue.playing = true;
     client.queues.set(guildId, queue);
 
-    logger.info(`Started playing "${song.title}" in guild ${guildId}`);
+    logger.music(`Started playing "${song.title}" in guild ${guildId}`);
 
   } catch (error) {
-    logger.error(`Play song error for "${song.title}" in guild ${guildId}:`, error.message);
+    logger.error(`Play song error for "${song.title}" in guild ${guildId}:`, error);
     if (!queue.isSkipping) {
       channel.send({ content: `Failed to play "${song.title}": ${error.message}, skipping...` });
       skipSong(guildId, queue, channel, client);
@@ -248,45 +297,42 @@ function setupPlayerListeners(guildId, queue, channel, client) {
   });
 
   queue.player.on(AudioPlayerStatus.Idle, async () => {
-    const song = queue.songs[0] || { title: 'Unknown', isLive: false };
-    logger.info(`Idle event triggered for "${song.title}" in guild ${guildId}, isSkipping: ${queue.isSkipping}`);
-    if (!queue.isSkipping) {
-      const finishedSong = queue.songs.shift();
-      if (!song.isLive && finishedSong) queue.history.unshift(finishedSong);
-      if (!song.isLive && queue.repeatMode === 'song' && finishedSong) {
-        queue.songs.unshift(finishedSong);
-      } else if (!song.isLive && queue.repeatMode === 'queue' && finishedSong) {
-        queue.songs.push(finishedSong);
-      } else if (!song.isLive && queue.loop && finishedSong) {
-        queue.songs.push(finishedSong);
-      }
-      if (queue.history.length > 10) queue.history = queue.history.slice(0, 10);
-      if (queue.liveProcess) {
-        queue.liveProcess.kill('SIGTERM');
-        queue.liveProcess = null;
-      }
-      client.queues.set(guildId, queue);
+    if (queue.isSkipping) {
+      queue.isSkipping = false;
+      return;
+    }
 
-      logger.info(`Queue after idle (natural end) in guild ${guildId}: ${JSON.stringify(queue.songs.map(s => s.title))}`);
-      if (queue.songs.length) {
-        logger.info(`Playing next song from idle in guild ${guildId}. Queue length: ${queue.songs.length}`);
-        await playSong(guildId, queue, channel, client);
-      } else {
-        queue.playing = false;
-        queue.isSkipping = false;
-        client.queues.set(guildId, queue);
-        logger.info(`Queue ended naturally in guild ${guildId}`);
-        const embed = new EmbedBuilder()
-          .setColor('#00FFFF')
-          .setTitle('Queue Ended')
-          .setDescription('The queue has finished playing. Leaving voice channel...')
-          .setTimestamp();
-        await channel.send({ embeds: [embed] });
-        cleanupQueue(guildId, client); // Leave channel when queue ends naturally
+    const finishedSong = queue.songs[0];
+    
+    // Handle repeat modes
+    if (queue.repeatMode === 'song') {
+      // Keep the current song and replay it
+      logger.info(`Repeating song "${finishedSong.title}" in guild ${guildId}`);
+      await playSong(guildId, queue, channel, client);
+      return;
+    } else if (queue.repeatMode === 'queue' && queue.songs.length > 0) {
+      // Move the finished song to the end of the queue
+      queue.songs.shift();
+      if (finishedSong) {
+        queue.songs.push(finishedSong);
+        logger.info(`Moving "${finishedSong.title}" to end of queue in guild ${guildId} (queue repeat mode)`);
       }
     } else {
-      logger.info(`Skipping detected, deferring to skip command in guild ${guildId}`);
+      // Normal mode - remove the finished song
+      queue.songs.shift();
     }
+
+    // Add to history if it exists
+    if (finishedSong) {
+      queue.history.push(finishedSong);
+      // Keep history limited to last 50 songs
+      if (queue.history.length > 50) {
+        queue.history.shift();
+      }
+    }
+
+    client.queues.set(guildId, queue);
+    await playSong(guildId, queue, channel, client);
   });
 
   queue.player.on('error', (err) => {
