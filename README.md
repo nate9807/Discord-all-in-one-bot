@@ -1,88 +1,129 @@
-# Insane Discord Bots Project
+# InsaneDCBot
 
-Welcome to the **Insane Discord Bots Project**, a collection of powerful, free, and open-source Discord bots designed to enhance your server experience! This repository features two standout bots:
+Welcome to **InsaneDCBot**, the ultimate Discord bot that brings premium features to your server—completely free! Inspired by top-tier bots like Bleed, MEE6, and others, InsaneDCBot combines powerful tools into one sleek package. Whether you need robust moderation, smooth music playback, or dynamic server management, this bot has you covered.
 
-- **InsaneDCBot** – An all-in-one powerhouse for moderation, music, and server management.
-- **Discord Modmail Bot** – A dedicated support ticket system for streamlined user assistance.
-
-Inspired by premium bots like **Bleed**, **MEE6**, and others, these tools bring professional-grade features to your community at no cost. Whether you're managing a bustling server or providing top-tier support, the **Insane Discord Bots Project** has you covered!
+Elevate your Discord experience today with **InsaneDCBot**!
 
 ---
 
-## 🚀 InsaneDCBot
+## ✨ Key Features
 
-### 🔹 Overview
-**InsaneDCBot** is the ultimate free Discord bot that delivers premium features inspired by top-tier bots like **Bleed**, **MEE6**, **JokieMusic**, and **ServerStats**. Designed to elevate your server with powerful moderation, smooth music playback, and dynamic management tools, InsaneDCBot is your all-in-one solution for creating a thriving, organized, and entertaining community. With easy setup and endless customization, this bot is perfect for server owners who want professional-grade functionality without the price tag.
+### 🛡️ Moderation & Security
+- **Advanced Auto-Moderation**
+  - Spam protection
+  - Content filtering
+  - Caps protection
+  - Invite link control
+  - Custom bad words filtering
+  - Progressive punishment system
+- **Moderation Commands**
+  - Ban, kick, mute (timeout)
+  - Warning system
+  - Message purge with filters
+  - Server lockdown
+  - Detailed mod logs
 
-### ✨ Features
-#### 🛡️ Moderation Tools
-- **Commands**: `ban`, `kick`, `mute`, `warn`, `purge` (delete up to 10000 messages at once).
-- **Logging**: Detailed moderation logs with timestamps, reasons, and moderator IDs.
-- **Temporary Actions**: Auto-expiring mutes and bans.
+### 🎵 Music System
+- **YouTube Integration**
+  - Play songs and playlists
+  - Support for live streams
+  - Queue management
+  - Play, pause, skip controls
+  - 24/7 playback support
 
-#### 🎵 Music Playback
-- **Stream Music** from YouTube with commands like `play <url/search>`, `pause`, `resume`, `skip`, `stop`, `queue`.
-- **Interactive Embeds**: Song details, progress bars, and requester info.
-- **Additional Features**: Volume control and playlist queuing.
+### ⚙️ Server Management
+- **Welcome/Leave System**
+  - Customizable messages
+  - Embed support
+  - Variable placeholders
+  - Join date tracking
+  - Member count updates
+- **Join-to-Create Voice**
+  - Dynamic channel creation
+  - Channel control panel
+  - User limit controls
+  - Custom naming modes
+- **Reaction Roles**
+  - Multiple role menus
+  - Exclusive/non-exclusive options
+  - Up to 25 roles per menu
+- **Server Stats**
+  - Live member counts
+  - Human/bot statistics
+  - Role counts
+  - Auto-updating channels
+- **Backup System**
+  - Server settings backup
+  - Multiple backup slots
+  - Easy restoration
 
-#### 🤖 Auto-Moderation
-- **Customizable Filters**: Bad-word detection with warn/mute/kick thresholds.
-- **Anti-Spam Protection**: Prevents message flooding.
-- **Flexible Settings**: Toggle per channel or server-wide.
+### 🎮 Fun & Engagement
+- **Giveaways**
+  - Multiple winners
+  - Custom duration
+  - Requirements support
+  - Early ending option
+- **Polls**
+  - Multiple choice options
+  - Timed duration
+  - Multiple/single vote modes
+- **Reminders**
+  - Natural language time
+  - Private/public options
+  - Server bump reminders
 
-#### ⚙️ Server Management
-- **Welcome/Leave Messages**: Customizable embed messages.
-- **Auto-Roles**: Assign default roles to new members.
-- **Mod-Log Channel**: Tracks all bot actions.
-
-#### 🎭 Reaction Roles
-- **Create Role Menus**: Up to 25 roles per message.
-- **Supports** emoji-based reactions and dropdown menus.
-- **Persistent Roles**: Roles remain after bot restarts.
-
-#### 📊 Server Stats
-- **Live Stats**: Displays total members, online users, or role counts in voice channels.
-- **Customizable Formats**: E.g., "Members: [count]".
-- **Optional Embed Mode**: For a cleaner look.
-
-#### 🔊 Join-to-Create Voice Channels
-- **Private VCs**: Users join a “Create VC” channel to spawn a private voice chat.
-- **Control Panel**: Buttons to lock, rename, or delete VCs.
-- **Auto Cleanup**: Empty channels auto-delete after a timeout.
-
-#### 🎮 Twitch Integration
-- **Live Notifications**: Get alerts when streamers go live.
-- **Customizable Embeds**: Displays streamer status and game info.
-- **Supports Multiple Streamers**: Add multiple Twitch accounts per server.
-
-#### 🔔 Bump Reminders
-- **Timed Alerts**: Reminds users to bump servers on platforms like Disboard.
-- **Cooldown System**: Prevents excessive bumping.
-- **Embed Reminders**: Provides clear instructions.
-
-### 🛠️ Setup & Installation
-#### 1️⃣ Install Dependencies
-```bash
-npm install
-sudo apt install certbot
-node bot.js
-```
-#### 2️⃣ Configure Settings
-- Create a `.env` file with your bot token and other settings (see `.env.example`).
-- Ensure Node.js v16+ is installed.
-- Run the bot with `node bot.js`.
-
-#### ⚠️ Work in Progress
-This bot is actively developed—expect occasional bugs or incomplete features. Report issues or suggest features via our [Discord server](https://discord.gg/vyJYYan52Z)!
-or you can add me! janessahellamean
-
-### 🌟 Why Choose InsaneDCBot?
-✅ Free access to premium-level tools.  
-✅ Simple setup with endless customization.  
-✅ Backed by a growing community of users and developers.  
+### 📊 Utility
+- **Embeds**
+  - Custom creation
+  - Templates available
+  - Edit existing embeds
+- **Announcements**
+  - Rich formatting
+  - Channel targeting
+  - Role pinging options
+- **Message Logging**
+  - Detailed message logs
+  - Server activity tracking
+  - Mod action logging
 
 ---
 
+## 🚀 Premium Features - Free Forever!
+InsaneDCBot packs features similar to premium bots like **Bleed**, **MEE6**, **JokieMusic**, and **ServerStats**—all in one place and completely free! Plus, it's constantly evolving with new features and improvements.
+
+---
+
+## 🛠️ Installation
+
+1. **Install Dependencies**  
+   ```bash
+   npm install
+   sudo apt install certbot
+   node bot.js
+   ```
+
+⚠️ Work in Progress
+This bot is actively being developed, so expect occasional updates and improvements. Found an issue? Let us know!
+
+---
+
+## 💬 Need Help?
+Join our Discord community or reach out directly:
+
+📍 Discord Server - https://discord.gg/vyJYYan52Z
+
+👤 janessahellamean - add me!
+
+---
+
+## 🌟 Why Choose InsaneDCBot?
+- Free access to premium-level features
+- Easy setup and endless customization
+- Regular updates and new features
+- Active community support
+- Reliable and efficient performance
+
+Give InsaneDCBot a spin and take your server to the next level!
 ## 📩 Discord Modmail Bot
 
 ### 🔹 Overview
@@ -147,4 +188,3 @@ pip install -r requirements.txt
 - **Contact**: Add `janessahellamean` on Discord for direct support.
 
 🚀 Elevate your Discord server today with the **Insane Discord Bots Project**! 🎉
-
