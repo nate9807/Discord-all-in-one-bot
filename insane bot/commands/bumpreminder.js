@@ -5,6 +5,10 @@ const logger = require('../utils/logger');
 
 const REMINDER_FILE = path.join(__dirname, '../data/reminders.json');
 const DEFAULT_INTERVAL = 2 * 60 * 60 * 1000; // 2 hours in milliseconds
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 1000; // 1 second
+const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
+const MAX_INACTIVE_TIME = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -23,6 +27,11 @@ module.exports = {
         )
         .addRoleOption(option =>
           option.setName('role3').setDescription('Third role to ping (optional)').setRequired(false)
+        )
+        .addChannelOption(option =>
+          option.setName('channel')
+            .setDescription('Channel for reminders (defaults to current channel)')
+            .setRequired(false)
         )
     )
     .addSubcommand(subcommand =>
@@ -50,29 +59,57 @@ module.exports = {
     await interaction.deferReply();
     const subcommand = interaction.options.getSubcommand();
     const guildId = interaction.guild.id;
-    const channelId = interaction.channel.id;
+    const channelId = interaction.options.getChannel('channel')?.id || interaction.channel.id;
 
     try {
-      let reminders = await loadReminders();
+      // Validate guild and channel
+      const guild = client.guilds.cache.get(guildId);
+      if (!guild) {
+        throw new Error('Unable to access guild');
+      }
+
+      const channel = guild.channels.cache.get(channelId);
+      if (!channel || !channel.isTextBased()) {
+        throw new Error('Invalid or non-text channel specified');
+      }
+
+      // Load reminders with retry mechanism
+      let reminders = await retryOperation(loadReminders);
 
       if (subcommand === 'add') {
         if (reminders[guildId]) {
-          return interaction.editReply({ content: 'A bump reminder already exists! Use `/bumpreminder setroles` to update roles.' });
+          return interaction.editReply({ 
+            content: 'A bump reminder already exists! Use `/bumpreminder setroles` to update roles.',
+            ephemeral: true 
+          });
         }
 
         const role1 = interaction.options.getRole('role1');
         const role2 = interaction.options.getRole('role2');
         const role3 = interaction.options.getRole('role3');
-        const roles = [role1.id];
-        if (role2) roles.push(role2.id);
-        if (role3) roles.push(role3.id);
+
+        // Validate roles
+        const roles = [role1, role2, role3]
+          .filter(role => role !== null)
+          .map(role => {
+            if (!guild.roles.cache.has(role.id)) {
+              throw new Error(`Role ${role.name} not found in the server`);
+            }
+            return role.id;
+          });
+
+        if (roles.length === 0) {
+          throw new Error('At least one valid role must be specified');
+        }
 
         reminders[guildId] = {
           interval: DEFAULT_INTERVAL,
           lastSent: null,
           active: true,
           channelId: channelId,
-          roles: roles
+          roles: roles,
+          createdAt: Date.now(),
+          lastActivity: Date.now()
         };
 
         await saveReminders(reminders);
@@ -80,8 +117,15 @@ module.exports = {
         const embed = new EmbedBuilder()
           .setColor('#00FFFF')
           .setTitle('Bump Reminder Added')
-          .setDescription(`Roles ${roles.map(id => `<@&${id}>`).join(', ')} will be pinged in this channel 2 hours after each Disboard bump`)
+          .setDescription(
+            `Reminder set up successfully!\n\n` +
+            `Channel: <#${channelId}>\n` +
+            `Roles: ${roles.map(id => `<@&${id}>`).join(', ')}\n` +
+            `Interval: 2 hours\n\n` +
+            `The reminder will be sent automatically after each Disboard bump.`
+          )
           .setTimestamp();
+        
         await interaction.editReply({ embeds: [embed] });
 
       } else if (subcommand === 'remove') {
@@ -107,23 +151,24 @@ module.exports = {
           .setTimestamp();
 
         if (!reminder) {
-          embed.setDescription('No active bump reminder');
+          embed.setDescription('No active bump reminder in this server.');
         } else {
           const now = Date.now();
           const lastSent = reminder.lastSent ? new Date(reminder.lastSent).getTime() : null;
           const nextTime = lastSent ? lastSent + reminder.interval : null;
-
           const timeUntilNext = nextTime ? nextTime - now : null;
-          const nextReminderText = timeUntilNext ? formatTimeUntil(timeUntilNext) : 'Waiting for first Disboard bump';
-          const lastBump = lastSent ? new Date(lastSent).toLocaleString() : 'None';
+          
+          const uptime = now - (reminder.createdAt || now);
+          const lastActivity = reminder.lastActivity ? formatTimeAgo(now - reminder.lastActivity) : 'Never';
 
           embed.setDescription(
-            `Active: ${reminder.active}\n` +
-            `Last Bump: ${lastBump}\n` +
-            `Next Reminder: ${nextReminderText}\n` +
-            `Interval: ${reminder.interval / 60000} minutes\n` +
-            `Channel: <#${reminder.channelId}>\n` +
-            `Roles: ${reminder.roles.map(id => `<@&${id}>`).join(', ')}`
+            `**Status**: ${reminder.active ? '🟢 Active' : '🔴 Inactive'}\n` +
+            `**Channel**: <#${reminder.channelId}>\n` +
+            `**Roles**: ${reminder.roles.map(id => `<@&${id}>`).join(', ')}\n` +
+            `**Last Bump**: ${lastSent ? formatTimeAgo(now - lastSent) : 'Never'}\n` +
+            `**Next Reminder**: ${timeUntilNext ? formatTimeUntil(timeUntilNext) : 'Waiting for bump'}\n` +
+            `**Uptime**: ${formatTimeUntil(uptime)}\n` +
+            `**Last Activity**: ${lastActivity}`
           );
         }
 
@@ -152,8 +197,14 @@ module.exports = {
         await interaction.editReply({ embeds: [embed] });
       }
     } catch (error) {
-      logger.error('Bumpreminder command error:', error.message || error);
-      await interaction.editReply({ content: `Error: ${error.message || 'Unknown error'}` });
+      logger.error('Bumpreminder command error:', error);
+      const errorEmbed = new EmbedBuilder()
+        .setColor('#FF0000')
+        .setTitle('Error')
+        .setDescription(`Failed to process command: ${error.message}`)
+        .setTimestamp();
+      
+      await interaction.editReply({ embeds: [errorEmbed], ephemeral: true });
     }
   },
 };
@@ -179,36 +230,86 @@ function formatTimeUntil(milliseconds) {
   return parts.join(', ') || 'Less than a second';
 }
 
+function formatTimeAgo(milliseconds) {
+  const seconds = Math.floor(milliseconds / 1000);
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+async function retryOperation(operation, maxRetries = MAX_RETRIES) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (attempt === maxRetries) throw error;
+      await new Promise(resolve => setTimeout(resolve, RETRY_DELAY * attempt));
+    }
+  }
+}
+
 async function loadReminders() {
   try {
     const data = await fs.readFile(REMINDER_FILE, 'utf8');
     if (!data.trim()) {
-      logger.info('reminders.json is empty, resetting to empty object');
-      await initializeRemindersFile();
+      logger.info('reminders.json is empty, initializing');
       return {};
     }
-    return JSON.parse(data);
+
+    const reminders = JSON.parse(data);
+    
+    // Validate and clean up reminders
+    const now = Date.now();
+    Object.entries(reminders).forEach(([guildId, reminder]) => {
+      // Remove invalid or very old inactive reminders
+      if (!reminder || 
+          !reminder.roles || 
+          !reminder.channelId ||
+          (now - reminder.lastActivity > MAX_INACTIVE_TIME)) {
+        delete reminders[guildId];
+        logger.info(`Removed invalid/inactive reminder for guild ${guildId}`);
+      }
+    });
+
+    return reminders;
   } catch (error) {
     if (error.code === 'ENOENT') {
-      logger.info('reminders.json not found, creating with empty object');
-      await initializeRemindersFile();
-      return {};
-    } else if (error.message.includes('Unexpected end of JSON input')) {
-      logger.warn('reminders.json is invalid, resetting to empty object');
+      logger.info('reminders.json not found, creating new file');
       await initializeRemindersFile();
       return {};
     }
-    logger.error('Failed to load reminders:', error.message || error);
     throw error;
   }
 }
 
 async function saveReminders(reminders) {
+  const backupFile = `${REMINDER_FILE}.backup`;
   try {
+    // Create backup of current file if it exists
+    try {
+      await fs.copyFile(REMINDER_FILE, backupFile);
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        logger.warn('Failed to create backup:', error);
+      }
+    }
+
+    // Save new data
     await fs.writeFile(REMINDER_FILE, JSON.stringify(reminders, null, 2));
-    logger.info('Successfully saved reminders to reminders.json');
+    logger.info('Successfully saved reminders');
   } catch (error) {
-    logger.error('Failed to save reminders:', error.message || error);
+    logger.error('Failed to save reminders:', error);
+    // Try to restore from backup
+    try {
+      await fs.copyFile(backupFile, REMINDER_FILE);
+      logger.info('Restored from backup after save failure');
+    } catch (restoreError) {
+      logger.error('Failed to restore from backup:', restoreError);
+    }
     throw error;
   }
 }
@@ -227,93 +328,191 @@ async function initializeRemindersFile() {
 
 async function sendReminder(guildId, client) {
   try {
-    const guild = client.guilds.cache.get(guildId);
-    if (!guild) {
-      logger.warn(`Guild ${guildId} not found for reminder`);
+    const reminders = await retryOperation(() => loadReminders());
+    const reminder = reminders[guildId];
+    
+    if (!reminder || !reminder.active) {
+      logger.debug(`Skipping inactive reminder for guild ${guildId}`);
       return;
     }
 
-    const reminders = await loadReminders();
-    const reminder = reminders[guildId];
-    if (!reminder || !reminder.active) return;
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) {
+      logger.warn(`Guild ${guildId} not found for reminder - marking inactive`);
+      reminder.active = false;
+      await saveReminders(reminders);
+      return;
+    }
 
     const channel = guild.channels.cache.get(reminder.channelId);
     if (!channel || !channel.isTextBased()) {
-      logger.error(`Channel ${reminder.channelId} not found or not text-based for guild ${guildId}`);
+      logger.error(`Channel ${reminder.channelId} not found or not text-based for guild ${guildId} - marking inactive`);
+      reminder.active = false;
+      await saveReminders(reminders);
       return;
     }
 
-    const rolesToPing = reminder.roles;
+    // Validate roles still exist
+    const validRoles = [];
+    const invalidRoles = [];
+    for (const roleId of reminder.roles) {
+      const role = guild.roles.cache.get(roleId);
+      if (role) {
+        validRoles.push(roleId);
+      } else {
+        invalidRoles.push(roleId);
+      }
+    }
+
+    if (invalidRoles.length > 0) {
+      logger.warn(`Found ${invalidRoles.length} invalid roles for guild ${guildId} - removing them`);
+      reminder.roles = validRoles;
+      await saveReminders(reminders);
+    }
+
+    if (validRoles.length === 0) {
+      logger.error(`No valid roles remain for guild ${guildId} - marking inactive`);
+      reminder.active = false;
+      await saveReminders(reminders);
+      return;
+    }
 
     const embed = new EmbedBuilder()
       .setColor('#00FFFF')
-      .setTitle('Bump Reminder')
+      .setTitle('Time to Bump! 🚀')
       .setDescription(
-        rolesToPing.length > 0
-          ? `${rolesToPing.map(id => `<@&${id}>`).join(' ')} Time to bump the server! Use the Disboard /bump command`
-          : 'Time to bump the server! Use the Disboard /bump command (no roles specified)'
+        `Hey ${validRoles.map(id => `<@&${id}>`).join(', ')}!\n\n` +
+        `It's time to bump the server using \`/bump\`!\n` +
+        `This helps increase server visibility and attract new members.`
       )
       .setTimestamp();
 
-    await channel.send({ embeds: [embed] });
-    logger.info(`Sent bump reminder to channel ${reminder.channelId} in guild ${guildId} pinging roles: ${rolesToPing.join(', ') || 'none'}`);
-
-    reminders[guildId].lastSent = new Date().toISOString();
-    await saveReminders(reminders);
-    await scheduleNextReminder(guildId, client);
+    try {
+      await channel.send({ 
+        content: validRoles.map(id => `<@&${id}>`).join(' '),
+        embeds: [embed]
+      });
+      
+      reminder.lastSent = Date.now();
+      reminder.lastActivity = Date.now();
+      await saveReminders(reminders);
+      
+      logger.info(`Successfully sent reminder for guild ${guildId}`);
+    } catch (error) {
+      logger.error(`Failed to send reminder for guild ${guildId}:`, error);
+      if (error.code === 50013) { // Missing Permissions
+        reminder.active = false;
+        await saveReminders(reminders);
+      }
+      throw error;
+    }
   } catch (error) {
-    logger.error('Send reminder error:', error.message || error);
+    logger.error('Error in sendReminder:', error);
   }
 }
 
 async function scheduleNextReminder(guildId, client, startTime, fromBump = false) {
   try {
-    const reminders = await loadReminders();
+    const reminders = await retryOperation(() => loadReminders());
     const reminder = reminders[guildId];
+    
     if (!reminder || !reminder.active) return;
 
     const now = Date.now();
-    const lastSent = reminder.lastSent ? new Date(reminder.lastSent).getTime() : null;
-
-    if (!lastSent && !fromBump) {
-      logger.info(`No bump recorded yet for guild ${guildId}, waiting for Disboard bump`);
-      return;
+    reminder.lastActivity = now;
+    
+    if (fromBump) {
+      reminder.lastSent = startTime;
     }
 
-    const nextTime = lastSent + reminder.interval;
+    const nextTime = startTime + reminder.interval;
     const delay = Math.max(0, nextTime - now);
 
-    logger.info(`Scheduling next reminder for guild ${guildId} in ${delay / 1000 / 60} minutes (at ${new Date(nextTime).toLocaleString()})`);
+    if (delay > 0) {
+      logger.info(`Scheduling next reminder for guild ${guildId} in ${formatTimeUntil(delay)}`);
+      setTimeout(() => sendReminder(guildId, client), delay);
+    } else {
+      logger.info(`Sending immediate reminder for guild ${guildId} (delay was ${delay}ms)`);
+      sendReminder(guildId, client);
+    }
 
-    setTimeout(() => sendReminder(guildId, client), delay);
+    await saveReminders(reminders);
   } catch (error) {
-    logger.error(`Failed to schedule reminder for guild ${guildId}:`, error.message || error);
+    logger.error('Error in scheduleNextReminder:', error);
   }
 }
 
 async function checkReminders(client) {
   try {
-    const reminders = await loadReminders();
+    const reminders = await retryOperation(() => loadReminders());
     const now = Date.now();
+    let changed = false;
 
     for (const [guildId, reminder] of Object.entries(reminders)) {
+      // Skip already inactive reminders
       if (!reminder.active) continue;
 
-      const lastSent = reminder.lastSent ? new Date(reminder.lastSent).getTime() : null;
-      if (!lastSent) continue;
+      // Check if reminder is too old without activity
+      if (now - reminder.lastActivity > MAX_INACTIVE_TIME) {
+        logger.info(`Deactivating inactive reminder for guild ${guildId}`);
+        reminder.active = false;
+        changed = true;
+        continue;
+      }
 
-      const nextTime = lastSent + reminder.interval;
+      // Validate guild still exists and bot has access
+      const guild = client.guilds.cache.get(guildId);
+      if (!guild) {
+        logger.warn(`Guild ${guildId} not found - deactivating reminder`);
+        reminder.active = false;
+        changed = true;
+        continue;
+      }
 
-      if (nextTime <= now) {
-        logger.info(`Triggering overdue reminder for guild ${guildId} (nextTime: ${new Date(nextTime).toLocaleString()})`);
-        await sendReminder(guildId, client);
-      } else {
-        await scheduleNextReminder(guildId, client);
+      // Validate channel still exists and is accessible
+      const channel = guild.channels.cache.get(reminder.channelId);
+      if (!channel || !channel.isTextBased()) {
+        logger.warn(`Channel ${reminder.channelId} not found or not text-based - deactivating reminder`);
+        reminder.active = false;
+        changed = true;
+        continue;
+      }
+
+      // Check if any valid roles remain
+      const validRoles = reminder.roles.filter(roleId => guild.roles.cache.has(roleId));
+      if (validRoles.length === 0) {
+        logger.warn(`No valid roles remain for guild ${guildId} - deactivating reminder`);
+        reminder.active = false;
+        changed = true;
+        continue;
+      }
+
+      // Update roles if some were invalid
+      if (validRoles.length !== reminder.roles.length) {
+        logger.info(`Updating roles for guild ${guildId} - removed ${reminder.roles.length - validRoles.length} invalid roles`);
+        reminder.roles = validRoles;
+        changed = true;
+      }
+
+      // Check if we missed any reminders while offline
+      if (reminder.lastSent) {
+        const timeSinceLastReminder = now - reminder.lastSent;
+        if (timeSinceLastReminder > reminder.interval) {
+          logger.info(`Missed reminder for guild ${guildId} - scheduling new one`);
+          scheduleNextReminder(guildId, client, now);
+        }
       }
     }
+
+    if (changed) {
+      await saveReminders(reminders);
+    }
   } catch (error) {
-    logger.error('Reminder check error:', error.message || error);
+    logger.error('Error in checkReminders:', error);
   }
+
+  // Schedule next cleanup
+  setTimeout(() => checkReminders(client), CLEANUP_INTERVAL);
 }
 
 module.exports.checkReminders = checkReminders;

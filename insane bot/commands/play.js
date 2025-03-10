@@ -4,6 +4,7 @@ const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerSta
 const ytdl = require('@distube/ytdl-core');
 const youtubedl = require('youtube-dl-exec');
 const ytSearch = require('yt-search');
+const SpotifyWebApi = require('spotify-web-api-node');
 const logger = require('../utils/logger');
 const { google } = require('googleapis');
 
@@ -11,6 +12,13 @@ const youtube = google.youtube({
   version: 'v3',
   auth: process.env.YOUTUBE_API_KEY
 });
+
+// Spotify URL patterns
+const SPOTIFY_PATTERNS = {
+  TRACK: /^(?:https?:\/\/)?(?:open\.)?spotify\.com\/track\/([a-zA-Z0-9]+)(?:\?.*)?$/,
+  ALBUM: /^(?:https?:\/\/)?(?:open\.)?spotify\.com\/album\/([a-zA-Z0-9]+)(?:\?.*)?$/,
+  PLAYLIST: /^(?:https?:\/\/)?(?:open\.)?spotify\.com\/playlist\/([a-zA-Z0-9]+)(?:\?.*)?$/
+};
 
 async function execute(interaction, client) {
   await interaction.deferReply();
@@ -59,10 +67,8 @@ async function execute(interaction, client) {
             entersState(queue.connection, VoiceConnectionStatus.Signalling, 5_000),
             entersState(queue.connection, VoiceConnectionStatus.Connecting, 5_000),
           ]);
-          // Seems to be reconnecting to a new channel
           logger.music(`Attempting to reconnect in guild ${guildId}`);
         } catch (error) {
-          // Seems to be a real disconnect which SHOULDN'T be recovered from
           logger.music(`Cleaning up connection in guild ${guildId}`);
           cleanupQueue(guildId, client);
         }
@@ -89,8 +95,98 @@ async function execute(interaction, client) {
 
   try {
     const query = interaction.options.getString('query');
-    let song;
+    let songs = [];
 
+    // Check if it's a Spotify URL
+    const spotifyTrackMatch = query.match(SPOTIFY_PATTERNS.TRACK);
+    const spotifyAlbumMatch = query.match(SPOTIFY_PATTERNS.ALBUM);
+    const spotifyPlaylistMatch = query.match(SPOTIFY_PATTERNS.PLAYLIST);
+
+    if (spotifyTrackMatch || spotifyAlbumMatch || spotifyPlaylistMatch) {
+      try {
+        // Initialize Spotify API client
+        const spotifyApi = new SpotifyWebApi({
+          clientId: process.env.SPOTIFY_CLIENT_ID,
+          clientSecret: process.env.SPOTIFY_CLIENT_SECRET
+        });
+
+        // Get access token
+        const data = await spotifyApi.clientCredentialsGrant();
+        spotifyApi.setAccessToken(data.body['access_token']);
+
+        if (spotifyTrackMatch) {
+          // Handle single track
+          const trackId = spotifyTrackMatch[1];
+          const track = await spotifyApi.getTrack(trackId);
+          songs.push({
+            title: track.body.name,
+            author: track.body.artists.map(artist => artist.name).join(', '),
+            duration: track.body.duration_ms / 1000,
+            thumbnail: track.body.album.images[0]?.url,
+            isLive: false,
+            requestedBy: interaction.user.tag,
+            spotifyTrack: track.body
+          });
+        } else if (spotifyAlbumMatch) {
+          // Handle album
+          const albumId = spotifyAlbumMatch[1];
+          const album = await spotifyApi.getAlbum(albumId);
+          songs = album.body.tracks.items.map(track => ({
+            title: track.name,
+            author: track.artists.map(artist => artist.name).join(', '),
+            duration: track.duration_ms / 1000,
+            thumbnail: album.body.images[0]?.url,
+            isLive: false,
+            requestedBy: interaction.user.tag,
+            spotifyTrack: track
+          }));
+        } else if (spotifyPlaylistMatch) {
+          // Handle playlist
+          const playlistId = spotifyPlaylistMatch[1];
+          const playlist = await spotifyApi.getPlaylist(playlistId);
+          songs = playlist.body.tracks.items
+            .filter(item => item.track) // Filter out null tracks
+            .map(item => ({
+              title: item.track.name,
+              author: item.track.artists.map(artist => artist.name).join(', '),
+              duration: item.track.duration_ms / 1000,
+              thumbnail: item.track.album.images[0]?.url,
+              isLive: false,
+              requestedBy: interaction.user.tag,
+              spotifyTrack: item.track
+            }));
+        }
+
+        // Add songs to queue
+        queue.songs.push(...songs);
+        client.queues.set(guildId, queue);
+
+        const embed = new EmbedBuilder()
+          .setColor('#1DB954')
+          .setTitle(spotifyTrackMatch ? '🎵 Added to Queue' : '📑 Added Playlist to Queue')
+          .setDescription(`Added ${songs.length} song${songs.length === 1 ? '' : 's'} to the queue from Spotify`)
+          .addFields(
+            { name: 'First Track', value: songs[0].title, inline: true },
+            { name: 'Artist', value: songs[0].author, inline: true },
+            { name: 'Total Duration', value: formatDuration(songs.reduce((acc, song) => acc + song.duration, 0)), inline: true }
+          )
+          .setThumbnail(songs[0].thumbnail)
+          .setTimestamp();
+
+        await interaction.editReply({ embeds: [embed] });
+
+        if (!queue.playing) {
+          logger.music(`Starting playback for guild ${guildId}`);
+          await playSong(guildId, queue, channel, client);
+        }
+        return;
+      } catch (error) {
+        logger.error(`Spotify API error in guild ${guildId}:`, error);
+        throw new Error('Failed to process Spotify link. Please try again later.');
+      }
+    }
+
+    // Handle YouTube URL or search
     if (ytdl.validateURL(query)) {
       try {
         const videoId = extractVideoId(query);
@@ -104,7 +200,7 @@ async function execute(interaction, client) {
         const isLive = !!video.liveStreamingDetails;
         logger.music(`Video "${video.snippet.title}" isLive: ${isLive} in guild ${guildId}`);
 
-        song = {
+        songs = [{
           title: video.snippet.title,
           url: `https://www.youtube.com/watch?v=${videoId}`,
           duration: isLive ? Infinity : parseDuration(video.contentDetails.duration),
@@ -112,7 +208,7 @@ async function execute(interaction, client) {
           thumbnail: video.snippet.thumbnails.default?.url || null,
           isLive: isLive,
           requestedBy: interaction.user.tag
-        };
+        }];
       } catch (error) {
         logger.error(`Failed to fetch video info in guild ${guildId}:`, error);
         throw new Error('Failed to fetch video information. Please try again.');
@@ -123,7 +219,7 @@ async function execute(interaction, client) {
         const result = await ytSearch(query);
         if (!result.videos.length) throw new Error('No results found');
         
-        song = {
+        songs = [{
           title: result.videos[0].title,
           url: result.videos[0].url,
           duration: result.videos[0].duration.seconds,
@@ -131,27 +227,27 @@ async function execute(interaction, client) {
           thumbnail: result.videos[0].thumbnail,
           isLive: false,
           requestedBy: interaction.user.tag
-        };
+        }];
       } catch (error) {
         logger.error(`Search failed in guild ${guildId}:`, error);
         throw new Error('Failed to search for the song. Please try again.');
       }
     }
 
-    // Add song to queue
-    queue.songs.push(song);
+    // Add songs to queue
+    queue.songs.push(...songs);
     client.queues.set(guildId, queue);
-    logger.music(`Added ${song.isLive ? 'live stream' : 'song'} "${song.title}" to queue in guild ${guildId} by ${song.requestedBy}`);
+    logger.music(`Added ${songs[0].isLive ? 'live stream' : 'song'} "${songs[0].title}" to queue in guild ${guildId} by ${songs[0].requestedBy}`);
 
     const embed = new EmbedBuilder()
-      .setColor(song.isLive ? '#FF0000' : '#00FFFF')
-      .setTitle(song.isLive ? 'Streaming 24/7' : 'Added to Queue')
-      .setThumbnail(song.thumbnail)
-      .setDescription(`**${song.title}** by ${song.author}${song.isLive ? '\nPlaying continuously until skipped...' : ''}`)
+      .setColor(songs[0].isLive ? '#FF0000' : '#00FFFF')
+      .setTitle(songs[0].isLive ? 'Streaming 24/7' : 'Added to Queue')
+      .setThumbnail(songs[0].thumbnail)
+      .setDescription(`**${songs[0].title}** by ${songs[0].author}${songs[0].isLive ? '\nPlaying continuously until skipped...' : ''}`)
       .addFields(
-        { name: song.isLive ? 'Status' : 'Duration', value: song.isLive ? 'LIVE' : formatDuration(song.duration), inline: true },
+        { name: songs[0].isLive ? 'Status' : 'Duration', value: songs[0].isLive ? 'LIVE' : formatDuration(songs[0].duration), inline: true },
         { name: 'Position', value: `${queue.songs.length}`, inline: true },
-        { name: 'Requested By', value: song.requestedBy, inline: true }
+        { name: 'Requested By', value: songs[0].requestedBy, inline: true }
       )
       .setTimestamp();
     
@@ -172,120 +268,134 @@ async function execute(interaction, client) {
 }
 
 async function playSong(guildId, queue, channel, client) {
-  const song = queue.songs[0];
-  if (!song) {
-    queue.playing = false;
-    queue.isSkipping = false;
-    client.queues.set(guildId, queue);
-    logger.music(`Queue empty in guild ${guildId}, ending playback`);
-    const embed = new EmbedBuilder()
-      .setColor('#00FFFF')
-      .setTitle('Queue Ended')
-      .setDescription('The queue has finished playing. Leaving voice channel...')
-      .setTimestamp();
-    await channel.send({ embeds: [embed] });
-    cleanupQueue(guildId, client); // Leave channel when queue is empty
+  if (!queue.songs.length) {
+    logger.music(`No more songs in queue for guild ${guildId}`);
+    cleanupQueue(guildId, client);
     return;
   }
 
+  const song = queue.songs[0];
+  
   try {
-    let audioStream;
-    if (song.isLive) {
-      logger.warn(`Starting live stream for "${song.title}" with URL: ${song.url}`);
-      const process = youtubedl.exec(song.url, {
-        format: 'bestaudio/best',
-        output: '-',
-        quiet: true,
-        noWarnings: true,
-        limitRate: '1M',
-        liveFromStart: true
-      }, { stdio: ['ignore', 'pipe', 'pipe'] });
-
-      queue.liveProcess = process;
-      audioStream = process.stdout;
-
-      process.stderr.on('data', (data) => {
-        logger.error(`yt-dlp stderr for "${song.title}" in guild ${guildId}:`, data.toString());
-      });
-
-      process.on('error', (err) => {
-        logger.error(`yt-dlp process error for "${song.title}" in guild ${guildId}:`, err.message);
-        if (!queue.isSkipping) {
-          channel.send({ content: `Streaming process error: ${err.message}, skipping...` });
-          skipSong(guildId, queue, channel, client);
+    let stream;
+    
+    // Handle Spotify tracks by searching YouTube
+    if (song.spotifyTrack) {
+      try {
+        const searchQuery = `${song.title} ${song.author}`;
+        logger.music(`Searching YouTube for Spotify track: "${searchQuery}" in guild ${guildId}`);
+        
+        const result = await ytSearch(searchQuery);
+        if (!result.videos.length) {
+          throw new Error(`No YouTube results found for "${searchQuery}"`);
         }
-      });
-
-      process.on('exit', (code, signal) => {
-        logger.info(`yt-dlp process for "${song.title}" in guild ${guildId} exited with code ${code}, signal ${signal}`);
-        if (signal === 'SIGTERM' && queue.isSkipping) {
-          logger.info(`Livestream "${song.title}" terminated by skip in guild ${guildId}, ignoring`);
-          return;
-        }
-        if (queue.playing && code !== 0 && !queue.isSkipping) {
-          channel.send({ content: `Livestream exited unexpectedly, skipping...` });
-          skipSong(guildId, queue, channel, client);
-        }
-      });
-
-      process.catch((err) => {
-        if (err.signal === 'SIGTERM' && queue.isSkipping) {
-          logger.info(`yt-dlp process for "${song.title}" in guild ${guildId} terminated by skip, ignoring error`);
-          return;
-        }
-        logger.error(`yt-dlp exec error for "${song.title}" in guild ${guildId}:`, err.message);
-        if (!queue.isSkipping) {
-          channel.send({ content: `Streaming error: ${err.message}, skipping...` });
-          skipSong(guildId, queue, channel, client);
-        }
-      });
-    } else {
-      audioStream = ytdl(song.url, {
-        filter: 'audioonly',
-        quality: 'highestaudio',
-        highWaterMark: 1 << 25,
-        requestOptions: {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Origin': 'https://www.youtube.com',
-            'Referer': 'https://www.youtube.com/'
-          }
-        }
-      });
-    }
-
-    if (!audioStream) throw new Error('Failed to initialize stream');
-
-    logger.info(`Stream initialized for "${song.title}" in guild ${guildId}`);
-
-    audioStream.on('error', (err) => {
-      if (err.message === 'Premature close' && !queue.liveProcess && queue.isSkipping) {
-        logger.info(`Ignoring premature close error for "${song.title}" in guild ${guildId} during skip`);
+        
+        song.url = result.videos[0].url;
+        logger.music(`Found YouTube match: "${result.videos[0].title}" for Spotify track in guild ${guildId}`);
+      } catch (error) {
+        logger.error(`Failed to find YouTube match for Spotify track in guild ${guildId}:`, error);
+        skipSong(guildId, queue, channel, client);
         return;
       }
-      logger.error(`Stream error for "${song.title}" in guild ${guildId}:`, err);
-      if (!queue.isSkipping) {
-        channel.send({ content: `Stream error: ${err.message}, skipping...` });
+    }
+
+    // Validate URL before attempting to stream
+    if (!song.url || !ytdl.validateURL(song.url)) {
+      logger.error(`Invalid YouTube URL for "${song.title}" in guild ${guildId}`);
+      skipSong(guildId, queue, channel, client);
+      return;
+    }
+
+    if (song.isLive) {
+      // Handle live streams differently
+      try {
+        const process = youtubedl.exec(song.url, {
+          format: 'best',
+          output: '-',
+          quiet: true
+        });
+        stream = process.stdout;
+        queue.liveProcess = process;
+      } catch (error) {
+        logger.error(`Failed to start live stream in guild ${guildId}:`, error);
         skipSong(guildId, queue, channel, client);
+        return;
       }
+    } else {
+      // Handle regular videos
+      try {
+        stream = ytdl(song.url, {
+          filter: 'audioonly',
+          quality: 'highestaudio',
+          highWaterMark: 1 << 25, // 32MB buffer
+          requestOptions: {
+            headers: {
+              Cookie: process.env.YOUTUBE_COOKIE || ''
+            }
+          }
+        });
+
+        stream.on('error', (error) => {
+          logger.error(`Stream error for "${song.title}" in guild ${guildId}:`, error);
+          skipSong(guildId, queue, channel, client);
+        });
+      } catch (error) {
+        logger.error(`Failed to create stream for "${song.title}" in guild ${guildId}:`, error);
+        skipSong(guildId, queue, channel, client);
+        return;
+      }
+    }
+
+    const resource = createAudioResource(stream, {
+      inlineVolume: true,
+      inputType: song.isLive ? 'raw' : 'webm/opus'
     });
 
-    const resource = createAudioResource(audioStream, { inlineVolume: true });
-    resource.volume.setVolume(queue.volume);
+    resource.volume?.setVolume(queue.volume);
+
+    if (!queue.player) {
+      queue.player = createAudioPlayer();
+      setupPlayerListeners(guildId, queue, channel, client);
+      queue.connection.subscribe(queue.player);
+    }
+
     queue.player.play(resource);
     queue.playing = true;
+
+    // Update queue in client
     client.queues.set(guildId, queue);
 
-    logger.music(`Started playing "${song.title}" in guild ${guildId}`);
+    // Send now playing message
+    const embed = new EmbedBuilder()
+      .setColor(song.isLive ? '#FF0000' : '#00FFFF')
+      .setTitle(song.isLive ? '🔴 Now Streaming' : '🎵 Now Playing')
+      .setDescription(`**${song.title}**${song.author ? ` by ${song.author}` : ''}`)
+      .addFields(
+        { 
+          name: song.isLive ? 'Type' : 'Duration', 
+          value: song.isLive ? 'LIVE' : formatDuration(song.duration), 
+          inline: true 
+        },
+        { 
+          name: 'Requested By', 
+          value: song.requestedBy, 
+          inline: true 
+        }
+      );
+
+    if (song.thumbnail) {
+      embed.setThumbnail(song.thumbnail);
+    }
+
+    if (channel) {
+      channel.send({ embeds: [embed] }).catch(error => {
+        logger.error(`Failed to send now playing message in guild ${guildId}:`, error);
+      });
+    }
 
   } catch (error) {
-    logger.error(`Play song error for "${song.title}" in guild ${guildId}:`, error);
-    if (!queue.isSkipping) {
-      channel.send({ content: `Failed to play "${song.title}": ${error.message}, skipping...` });
-      skipSong(guildId, queue, channel, client);
-    }
+    logger.error(`Failed to play song "${song.title}" in guild ${guildId}:`, error);
+    skipSong(guildId, queue, channel, client);
   }
 }
 
@@ -346,50 +456,97 @@ function setupPlayerListeners(guildId, queue, channel, client) {
 }
 
 function skipSong(guildId, queue, channel, client) {
-  if (queue.player && queue.playing) {
-    queue.player.stop();
-    logger.info(`Stopped player for guild ${guildId}`);
-  }
-  if (queue.liveProcess) {
-    queue.liveProcess.kill('SIGTERM');
-    queue.liveProcess = null;
-  }
-  const skippedSong = queue.songs.shift();
-  if (skippedSong && !skippedSong.isLive) queue.history.unshift(skippedSong);
-  if (queue.loop && skippedSong) queue.songs.push(skippedSong);
-  client.queues.set(guildId, queue);
+  try {
+    if (!queue) {
+      logger.warn(`Attempted to skip song in non-existent queue for guild ${guildId}`);
+      return;
+    }
 
-  logger.info(`After skip, queue in guild ${guildId}: ${JSON.stringify(queue.songs.map(s => s.title))}`);
-  if (queue.songs.length) {
-    logger.info(`Skipping to next song in guild ${guildId}, queue length: ${queue.songs.length}`);
-    playSong(guildId, queue, channel, client);
-  } else {
-    queue.playing = false;
-    queue.isSkipping = false;
+    queue.isSkipping = true;
+
+    // Stop current playback
+    if (queue.player) {
+      queue.player.stop();
+    }
+
+    // Kill any live stream process
+    if (queue.liveProcess) {
+      try {
+        queue.liveProcess.kill('SIGTERM');
+      } catch (error) {
+        logger.error(`Failed to kill live process in guild ${guildId}:`, error);
+      }
+      queue.liveProcess = null;
+    }
+
+    // Remove current song and add to history if not live
+    const skippedSong = queue.songs.shift();
+    if (skippedSong && !skippedSong.isLive) {
+      if (!queue.history) queue.history = [];
+      queue.history = [skippedSong, ...queue.history].slice(0, 50); // Keep last 50 songs
+    }
+
+    // Update queue in client
     client.queues.set(guildId, queue);
-    logger.info(`Queue ended after skip in guild ${guildId}`);
-    const embed = new EmbedBuilder()
-      .setColor('#00FFFF')
-      .setTitle('Queue Ended')
-      .setDescription('The queue has finished playing. Leaving voice channel...')
-      .setTimestamp();
-    channel.send({ embeds: [embed] });
-    cleanupQueue(guildId, client); // Leave channel when queue ends after skip
+
+    // If there are more songs, play the next one
+    if (queue.songs.length > 0) {
+      logger.music(`Skipping to next song in guild ${guildId}`);
+      playSong(guildId, queue, channel, client);
+    } else {
+      logger.music(`No more songs in queue after skip in guild ${guildId}`);
+      cleanupQueue(guildId, client);
+    }
+  } catch (error) {
+    logger.error(`Error in skipSong for guild ${guildId}:`, error);
+    // Try to clean up anyway
+    cleanupQueue(guildId, client);
+  } finally {
+    queue.isSkipping = false;
   }
 }
 
 function cleanupQueue(guildId, client) {
-  const queue = client.queues.get(guildId);
-  if (queue) {
+  try {
+    const queue = client.queues.get(guildId);
+    if (!queue) return;
+
+    // Stop playback
+    if (queue.player) {
+      queue.player.stop();
+      queue.player = null;
+    }
+
+    // Kill any live stream process
     if (queue.liveProcess) {
-      queue.liveProcess.kill('SIGTERM');
+      try {
+        queue.liveProcess.kill('SIGTERM');
+      } catch (error) {
+        logger.error(`Failed to kill live process during cleanup in guild ${guildId}:`, error);
+      }
+      queue.liveProcess = null;
     }
+
+    // Destroy connection
     if (queue.connection) {
-      queue.connection.destroy();
-      logger.info(`Bot left voice channel in guild ${guildId}`);
+      try {
+        queue.connection.destroy();
+      } catch (error) {
+        logger.error(`Failed to destroy connection in guild ${guildId}:`, error);
+      }
     }
+
+    // Clear queue
+    queue.songs = [];
+    queue.playing = false;
+    queue.isSkipping = false;
+
+    // Remove from client queues
     client.queues.delete(guildId);
-    logger.info(`Cleaned up queue for guild ${guildId}`);
+    
+    logger.music(`Cleaned up queue for guild ${guildId}`);
+  } catch (error) {
+    logger.error(`Error in cleanupQueue for guild ${guildId}:`, error);
   }
 }
 

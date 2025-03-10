@@ -79,7 +79,7 @@ function start(shardingManager) {
     manager = shardingManager;
     
     // Initialize auth middleware with the manager
-    const { isAuthenticated } = createAuthMiddleware(manager);
+    const { requireAdmin, requireUser } = createAuthMiddleware(manager);
     
     // Initialize admin auth middleware
     const isAdminAuthenticated = (req, res, next) => {
@@ -156,12 +156,26 @@ function start(shardingManager) {
         }
     });
 
-    app.get('/', isAuthenticated, (req, res) => {
+    app.get('/', (req, res) => {
         res.sendFile(path.join(__dirname, 'public', 'landing.html'));
     });
 
-    app.get('/mod', isAdminAuthenticated, (req, res) => {
+    // Add redirect from /mod to /mod-dashboard
+    app.get('/mod', (req, res) => {
+        res.redirect('/mod-dashboard');
+    });
+
+    app.get('/mod-dashboard', requireAdmin(), (req, res) => {
         res.sendFile(path.join(__dirname, 'public', 'mod-dashboard.html'));
+    });
+
+    // Serve static files for mod dashboard
+    app.get('/mod-dashboard.css', (req, res) => {
+        res.sendFile(path.join(__dirname, 'public', 'mod-dashboard.css'));
+    });
+
+    app.get('/mod-dashboard.js', (req, res) => {
+        res.sendFile(path.join(__dirname, 'public', 'script.js'));
     });
 
     app.get('/api/stats', isAdminAuthenticated, async (req, res) => {
@@ -196,59 +210,13 @@ function start(shardingManager) {
         }
     });
 
-    app.post('/api/mod-action', isAuthenticated, async (req, res) => {
-        try {
-            const { userId, actionType, reason } = req.body;
-            const guildId = req.session.selectedGuildId;
-
-            const result = await manager.broadcastEval(async (client, { guildId, userId, actionType, reason }) => {
-                const guild = client.guilds.cache.get(guildId);
-                if (!guild) return { error: 'Guild not found' };
-
-                const member = await guild.members.fetch(userId).catch(() => null);
-                if (!member) return { error: 'Member not found' };
-
-                try {
-                    switch (actionType) {
-                        case 'warn':
-                            // Store warning in database or send warning message
-                            await member.send(`You have been warned in ${guild.name}. Reason: ${reason}`).catch(() => {});
-                            return { success: true, message: 'Warning sent' };
-
-                        case 'mute':
-                            const duration = parseInt(reason); // reason contains duration in minutes for mute
-                            await member.timeout(duration * 60 * 1000, 'Timeout by moderator');
-                            return { success: true, message: 'User timed out' };
-
-                        case 'kick':
-                            await member.kick(reason);
-                            return { success: true, message: 'User kicked' };
-
-                        case 'ban':
-                            await member.ban({ reason });
-                            return { success: true, message: 'User banned' };
-
-                        default:
-                            return { error: 'Invalid action type' };
-                    }
-                } catch (err) {
-                    return { error: err.message };
-                }
-            }, { context: { guildId, userId, actionType, reason } });
-
-            const response = result[0];
-            if (response.error) {
-                return res.status(400).json({ error: response.error });
-            }
-            res.json(response);
-        } catch (err) {
-            console.error('Error in mod action:', err);
-            res.status(500).json({ error: 'Internal server error' });
-        }
+    app.post('/api/mod/*', requireAdmin(), async (req, res) => {
+        // Handle mod API endpoints
+        // ... existing mod API handling code ...
     });
 
     // Quick actions endpoints
-    app.post('/api/lockdown', isAuthenticated, async (req, res) => {
+    app.post('/api/lockdown', isAdminAuthenticated, async (req, res) => {
         try {
             const { reason } = req.body;
             const guildId = req.session.selectedGuildId;
@@ -285,7 +253,7 @@ function start(shardingManager) {
         }
     });
 
-    app.post('/api/clear-chat', isAuthenticated, async (req, res) => {
+    app.post('/api/clear-chat', isAdminAuthenticated, async (req, res) => {
         try {
             const { channelId, amount } = req.body;
             const guildId = req.session.selectedGuildId;
@@ -316,7 +284,7 @@ function start(shardingManager) {
         }
     });
 
-    app.post('/api/voice-mute-all', isAuthenticated, async (req, res) => {
+    app.post('/api/voice-mute-all', isAdminAuthenticated, async (req, res) => {
         try {
             const { reason } = req.body;
             const guildId = req.session.selectedGuildId;
@@ -351,7 +319,7 @@ function start(shardingManager) {
         }
     });
 
-    app.post('/api/voice-unmute-all', isAuthenticated, async (req, res) => {
+    app.post('/api/voice-unmute-all', isAdminAuthenticated, async (req, res) => {
         try {
             const guildId = req.session.selectedGuildId;
 
@@ -385,17 +353,13 @@ function start(shardingManager) {
         }
     });
 
-    // Add user authentication middleware for music features
-    const isMusicAllowed = (req, res, next) => {
-        if (!req.session.user) return res.redirect('/login');
-        next();
-    };
-
-    app.get('/music', isMusicAllowed, (req, res) => {
+    // Music dashboard routes - require basic user authentication
+    app.get(['/music', '/music-dashboard'], requireUser(), (req, res) => {
         res.sendFile(path.join(__dirname, 'public', 'music-dashboard.html'));
     });
 
-    app.get('/music/now-playing', isMusicAllowed, async (req, res) => {
+    // Music API endpoints
+    app.get('/api/music/now-playing', requireUser(), async (req, res) => {
         try {
             const data = await manager.broadcastEval((client, { userId }) => {
                 const queue = client.queues.get(client.guilds.cache.first()?.id);
@@ -422,7 +386,8 @@ function start(shardingManager) {
         }
     });
 
-    app.get('/music/queue', isMusicAllowed, async (req, res) => {
+    // Update other music endpoints to use /api/music prefix
+    app.get('/api/music/queue', requireUser(), async (req, res) => {
         try {
             const data = await manager.broadcastEval((client, { userId }) => {
                 const queue = client.queues.get(client.guilds.cache.first()?.id);
@@ -447,7 +412,7 @@ function start(shardingManager) {
         }
     });
 
-    app.post('/music/toggle-playback', isAdminAuthenticated, async (req, res) => {
+    app.post('/api/music/toggle-playback', requireUser(), async (req, res) => {
         try {
             const result = await manager.broadcastEval(client => {
                 const queue = client.queues.get(client.guilds.cache.first()?.id);
@@ -470,7 +435,7 @@ function start(shardingManager) {
         }
     });
 
-    app.post('/music/volume', isAdminAuthenticated, async (req, res) => {
+    app.post('/api/music/volume', requireUser(), async (req, res) => {
         const { volume } = req.body;
         if (typeof volume !== 'number' || volume < 0 || volume > 100) {
             return res.status(400).json({ error: 'Invalid volume' });
@@ -492,7 +457,7 @@ function start(shardingManager) {
         }
     });
 
-    app.post('/music/add-to-queue', isMusicAllowed, async (req, res) => {
+    app.post('/api/music/add-to-queue', requireUser(), async (req, res) => {
         const { query } = req.body;
         if (!query) return res.status(400).json({ error: 'Query required' });
         try {
@@ -580,7 +545,7 @@ function start(shardingManager) {
         }
     });
 
-    app.post('/music/remove-from-queue', isMusicAllowed, async (req, res) => {
+    app.post('/api/music/remove-from-queue', requireUser(), async (req, res) => {
         const { index } = req.body;
         if (index === undefined || typeof index !== 'number') {
             return res.status(400).json({ error: 'Valid queue index required' });
@@ -617,7 +582,7 @@ function start(shardingManager) {
         }
     });
 
-    app.post('/music/next', isMusicAllowed, async (req, res) => {
+    app.post('/api/music/next', requireUser(), async (req, res) => {
         try {
             const result = await manager.broadcastEval(async (client, { userId }) => {
                 const queue = client.queues.get(client.guilds.cache.first()?.id);
@@ -670,7 +635,7 @@ function start(shardingManager) {
         }
     });
 
-    app.post('/music/previous', isMusicAllowed, async (req, res) => {
+    app.post('/api/music/previous', requireUser(), async (req, res) => {
         try {
             const result = await manager.broadcastEval(async (client, { userId }) => {
                 const queue = client.queues.get(client.guilds.cache.first()?.id);
@@ -756,7 +721,7 @@ function start(shardingManager) {
         req.session.destroy(() => res.redirect('/login'));
     });
 
-    app.get('/guilds', isAuthenticated, async (req, res) => {
+    app.get('/guilds', isAdminAuthenticated, async (req, res) => {
         try {
             const guildData = await manager.broadcastEval(async client => {
                 return client.guilds.cache.map(guild => ({
@@ -1021,6 +986,69 @@ function start(shardingManager) {
             res.status(500).json({ error: 'Failed to send message' });
             logger.error('Send message endpoint error:', error);
         }
+    });
+
+    // Add a catch-all route for 404s
+    app.use((req, res, next) => {
+        if (req.accepts('html')) {
+            res.status(404).send(`
+                <html>
+                    <head>
+                        <title>404 - Page Not Found</title>
+                        <style>
+                            body {
+                                font-family: Arial, sans-serif;
+                                text-align: center;
+                                padding-top: 50px;
+                            }
+                            h1 { color: #333; }
+                            p { color: #666; }
+                            a { color: #007bff; text-decoration: none; }
+                            a:hover { text-decoration: underline; }
+                        </style>
+                    </head>
+                    <body>
+                        <h1>404 - Page Not Found</h1>
+                        <p>The page you're looking for doesn't exist.</p>
+                        <p><a href="/">Return to Home</a></p>
+                    </body>
+                </html>
+            `);
+            return;
+        }
+        res.status(404).json({ error: 'Not found' });
+    });
+
+    // Error handling middleware
+    app.use((err, req, res, next) => {
+        logger.error('Express error:', err);
+        if (req.accepts('html')) {
+            res.status(500).send(`
+                <html>
+                    <head>
+                        <title>500 - Server Error</title>
+                        <style>
+                            body {
+                                font-family: Arial, sans-serif;
+                                text-align: center;
+                                padding-top: 50px;
+                            }
+                            h1 { color: #dc3545; }
+                            p { color: #666; }
+                            a { color: #007bff; text-decoration: none; }
+                            a:hover { text-decoration: underline; }
+                        </style>
+                    </head>
+                    <body>
+                        <h1>500 - Server Error</h1>
+                        <p>Something went wrong on our end. Please try again later.</p>
+                        <p><a href="/">Return to Home</a></p>
+                    </body>
+                </html>
+            `);
+            return;
+        }
+        res.status(500).json({ error: 'Internal server error' });
     });
 
     server.listen(port, () => {

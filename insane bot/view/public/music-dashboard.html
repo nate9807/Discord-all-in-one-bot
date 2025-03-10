@@ -270,68 +270,38 @@
         // Update now playing information
         async function updateNowPlaying() {
             try {
-                const response = await Promise.race([
-                    fetch('/music/now-playing', { credentials: 'include' }),
-                    new Promise((_, reject) => 
-                        setTimeout(() => reject(new Error('Timeout')), 5000)
-                    )
-                ]);
-                
-                if (!response.ok) {
-                    throw new Error(`Server returned ${response.status}: ${response.statusText}`);
-                }
-                
+                const response = await fetch('/api/music/now-playing', { credentials: 'include' });
                 const data = await response.json();
-
-                if (data.error) {
-                    showToast(data.error, 'error');
-                    return;
-                }
-
+                
                 if (data.track) {
-                    document.getElementById('playerStatus').textContent = '';
                     currentTrack = data.track;
                     isPlaying = data.isPlaying;
-
+                    
                     document.getElementById('trackTitle').textContent = data.track.title;
                     document.getElementById('trackArtist').textContent = data.track.artist;
                     document.getElementById('trackArt').src = data.track.thumbnail || 'https://i.imgur.com/bZUIj8X.png';
                     document.getElementById('requestedBy').textContent = `Requested by: ${data.track.requestedBy}`;
-
-                    document.getElementById('playPauseBtn').disabled = !data.canControl;
+                    
+                    const playPauseBtn = document.getElementById('playPauseBtn');
+                    playPauseBtn.disabled = !data.canControl;
+                    playPauseBtn.querySelector('.material-icons').textContent = isPlaying ? 'pause' : 'play_arrow';
+                    
                     document.getElementById('skipBtn').disabled = !data.canControl;
                     document.getElementById('prevBtn').disabled = !data.canControl;
-                    document.getElementById('playPauseBtn').innerHTML = `<span class="material-icons">${isPlaying ? 'pause' : 'play_arrow'}</span>`;
                     
-                    // Update document title
-                    document.title = `${data.track.title} - Music Dashboard`;
-                    
-                    // Update progress
                     updateProgress();
+                    document.getElementById('playerStatus').textContent = isPlaying ? 'Playing' : 'Paused';
                 } else {
-                    resetNowPlaying();
+                    resetPlayer();
                 }
             } catch (error) {
                 console.error('Error updating now playing:', error);
-                
-                // Check for specific network-related errors
-                if (error.message === 'Timeout' || error.message?.includes('NetworkError') || 
-                    error.message?.includes('Failed to fetch')) {
-                    document.getElementById('playerStatus').textContent = 'Connection timeout - retrying...';
-                    
-                    // Retry after a short delay with reduced frequency
-                    setTimeout(() => {
-                        updateNowPlaying();
-                    }, 10000); // 10 seconds
-                } else {
-                    document.getElementById('playerStatus').textContent = 'Connection error';
-                    showToast('Failed to update now playing information', 'error');
-                }
+                document.getElementById('playerStatus').textContent = 'Failed to update player status';
             }
         }
 
         // Reset the now playing display
-        function resetNowPlaying() {
+        function resetPlayer() {
             currentTrack = null;
             isPlaying = false;
             
@@ -360,292 +330,159 @@
         // Update queue information
         async function updateQueue() {
             try {
-                const response = await Promise.race([
-                    fetch('/music/queue', { credentials: 'include' }),
-                    new Promise((_, reject) => 
-                        setTimeout(() => reject(new Error('Timeout')), 5000)
-                    )
-                ]);
-                
-                if (!response.ok) {
-                    throw new Error(`Server returned ${response.status}: ${response.statusText}`);
-                }
-                
+                const response = await fetch('/api/music/queue', { credentials: 'include' });
                 const data = await response.json();
-
-                if (data.error) {
-                    showToast(data.error, 'error');
-                    return;
-                }
-
+                
                 const queueList = document.getElementById('queueList');
-                queueList.innerHTML = '';
-
-                data.queue.forEach((track, index) => {
-                    const item = document.createElement('div');
-                    item.className = 'queue-item';
-                    item.innerHTML = `
-                        <div class="queue-item-info">
-                            <div class="queue-item-title">${escapeHtml(track.title)}</div>
-                            <div class="queue-item-artist">${escapeHtml(track.artist)}</div>
-                            <div class="queue-item-duration">${formatTime(track.duration)}</div>
-                            <div class="queue-item-requester">Requested by: ${escapeHtml(track.requestedBy)}</div>
+                if (data.queue && data.queue.length > 0) {
+                    queueList.innerHTML = data.queue.map((track, index) => `
+                        <div class="queue-item">
+                            <div class="queue-item-info">
+                                <span class="queue-position">${index + 1}</span>
+                                <div class="queue-item-details">
+                                    <div class="queue-item-title">${track.title}</div>
+                                    <div class="queue-item-artist">${track.artist}</div>
+                                </div>
+                            </div>
+                            ${track.canControl ? `
+                                <button onclick="removeFromQueue(${index})" class="remove-btn">
+                                    <span class="material-icons">remove</span>
+                                </button>
+                            ` : ''}
                         </div>
-                        ${track.canControl ? `
-                            <button onclick="removeFromQueue(${index})" class="remove-btn">
-                                <span class="material-icons">close</span>
-                            </button>
-                        ` : ''}
-                    `;
-                    queueList.appendChild(item);
-                });
-
-                if (data.queue.length === 0) {
+                    `).join('');
+                } else {
                     queueList.innerHTML = '<div class="empty-queue">Queue is empty</div>';
                 }
             } catch (error) {
                 console.error('Error updating queue:', error);
-                
-                // For queue errors, we don't want to spam the user with notifications
-                // Just quietly log the error and try again later
-                if (error.message !== 'Timeout' && 
-                    !error.message?.includes('NetworkError') && 
-                    !error.message?.includes('Failed to fetch')) {
-                    showToast('Failed to update queue', 'error');
-                }
+                showToast('Failed to update queue', 'error');
             }
         }
 
         // Toggle playback with retry
         async function togglePlayback() {
             try {
-                document.getElementById('playPauseBtn').disabled = true;
-                
-                const response = await Promise.race([
-                    fetch('/music/toggle-playback', {
-                        method: 'POST',
-                        credentials: 'include'
-                    }),
-                    new Promise((_, reject) => 
-                        setTimeout(() => reject(new Error('Timeout')), 5000)
-                    )
-                ]);
-                
-                if (!response.ok) {
-                    throw new Error(`Server returned ${response.status}: ${response.statusText}`);
-                }
-                
+                const response = await fetch('/api/music/toggle-playback', {
+                    method: 'POST',
+                    credentials: 'include'
+                });
                 const data = await response.json();
-
                 if (data.error) {
-                    showToast(data.error, 'error');
-                    document.getElementById('playPauseBtn').disabled = false;
-                    return;
+                    throw new Error(data.error);
                 }
-
-                isPlaying = data.isPlaying;
-                document.getElementById('playPauseBtn').innerHTML = `<span class="material-icons">${isPlaying ? 'pause' : 'play_arrow'}</span>`;
-                document.getElementById('playPauseBtn').disabled = false;
-                
-                // Update progress
-                updateProgress();
+                updateNowPlaying();
             } catch (error) {
                 console.error('Error toggling playback:', error);
                 showToast('Failed to toggle playback', 'error');
-                document.getElementById('playPauseBtn').disabled = false;
             }
         }
 
         // Skip current track
         async function skipTrack() {
             try {
-                document.getElementById('skipBtn').disabled = true;
-                
-                const response = await Promise.race([
-                    fetch('/music/next', {
-                        method: 'POST',
-                        credentials: 'include'
-                    }),
-                    new Promise((_, reject) => 
-                        setTimeout(() => reject(new Error('Timeout')), 5000)
-                    )
-                ]);
-                
-                if (!response.ok) {
-                    throw new Error(`Server returned ${response.status}: ${response.statusText}`);
-                }
-                
+                const response = await fetch('/api/music/next', {
+                    method: 'POST',
+                    credentials: 'include'
+                });
                 const data = await response.json();
-
                 if (data.error) {
-                    showToast(data.error, 'error');
-                    document.getElementById('skipBtn').disabled = false;
-                    return;
+                    throw new Error(data.error);
                 }
-
-                await updateNowPlaying();
-                await updateQueue();
-                document.getElementById('skipBtn').disabled = false;
+                updateNowPlaying();
+                updateQueue();
             } catch (error) {
                 console.error('Error skipping track:', error);
                 showToast('Failed to skip track', 'error');
-                document.getElementById('skipBtn').disabled = false;
             }
         }
 
         // Previous track
         async function previousTrack() {
             try {
-                document.getElementById('prevBtn').disabled = true;
-                
-                const response = await Promise.race([
-                    fetch('/music/previous', {
-                        method: 'POST',
-                        credentials: 'include'
-                    }),
-                    new Promise((_, reject) => 
-                        setTimeout(() => reject(new Error('Timeout')), 5000)
-                    )
-                ]);
-                
-                if (!response.ok) {
-                    throw new Error(`Server returned ${response.status}: ${response.statusText}`);
-                }
-                
+                const response = await fetch('/api/music/previous', {
+                    method: 'POST',
+                    credentials: 'include'
+                });
                 const data = await response.json();
-
                 if (data.error) {
-                    showToast(data.error, 'error');
-                    document.getElementById('prevBtn').disabled = false;
-                    return;
+                    throw new Error(data.error);
                 }
-
-                await updateNowPlaying();
-                await updateQueue();
-                document.getElementById('prevBtn').disabled = false;
+                updateNowPlaying();
+                updateQueue();
             } catch (error) {
                 console.error('Error going to previous track:', error);
                 showToast('Failed to go to previous track', 'error');
-                document.getElementById('prevBtn').disabled = false;
             }
         }
 
         // Set volume with debounce
         let volumeChangeTimeout = null;
-        async function setVolume(value) {
-            // Clear any pending volume changes
-            if (volumeChangeTimeout) {
-                clearTimeout(volumeChangeTimeout);
-            }
-            
-            // Debounce volume changes to reduce API calls
-            volumeChangeTimeout = setTimeout(async () => {
-                try {
-                    const response = await Promise.race([
-                        fetch('/music/volume', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ volume: parseInt(value) }),
-                            credentials: 'include'
-                        }),
-                        new Promise((_, reject) => 
-                            setTimeout(() => reject(new Error('Timeout')), 5000)
-                        )
-                    ]);
-                    
-                    if (!response.ok) {
-                        throw new Error(`Server returned ${response.status}: ${response.statusText}`);
-                    }
-                    
-                    const data = await response.json();
-
-                    if (data.error) {
-                        showToast(data.error, 'error');
-                    }
-                } catch (error) {
-                    console.error('Error setting volume:', error);
-                    // Don't show toast for volume errors to avoid spam
+        async function setVolume(volume) {
+            try {
+                const response = await fetch('/api/music/volume', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ volume: parseInt(volume) }),
+                    credentials: 'include'
+                });
+                const data = await response.json();
+                if (data.error) {
+                    throw new Error(data.error);
                 }
-            }, 300); // Wait 300ms after last change before sending
+            } catch (error) {
+                console.error('Error setting volume:', error);
+                showToast('Failed to set volume', 'error');
+            }
         }
 
         // Add track to queue
         async function addToQueue() {
-            const query = document.getElementById('searchInput').value.trim();
-            if (!query) {
-                showToast('Please enter a search term or URL', 'warning');
-                return;
-            }
+            const input = document.getElementById('searchInput');
+            const query = input.value.trim();
+            if (!query) return;
 
             try {
-                document.getElementById('searchInput').disabled = true;
-                showToast('Adding to queue...', 'info');
-                
-                const response = await Promise.race([
-                    fetch('/music/add-to-queue', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ query }),
-                        credentials: 'include'
-                    }),
-                    new Promise((_, reject) => 
-                        setTimeout(() => reject(new Error('Timeout')), 10000) // Longer timeout for search
-                    )
-                ]);
-                
-                if (!response.ok) {
-                    throw new Error(`Server returned ${response.status}: ${response.statusText}`);
-                }
-                
+                const response = await fetch('/api/music/add-to-queue', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ query }),
+                    credentials: 'include'
+                });
                 const data = await response.json();
-
                 if (data.error) {
-                    showToast(data.error, 'error');
-                    document.getElementById('searchInput').disabled = false;
-                    return;
+                    throw new Error(data.error);
                 }
-
-                document.getElementById('searchInput').value = '';
-                document.getElementById('searchInput').disabled = false;
-                showToast(`Added "${data.track?.title || 'track'}" to the queue`, 'success');
-                
-                await updateQueue();
-                await updateNowPlaying();
+                input.value = '';
+                updateQueue();
+                showToast('Added to queue: ' + data.track.title, 'success');
             } catch (error) {
                 console.error('Error adding to queue:', error);
                 showToast('Failed to add to queue', 'error');
-                document.getElementById('searchInput').disabled = false;
             }
         }
 
         // Remove track from queue
         async function removeFromQueue(index) {
             try {
-                const response = await Promise.race([
-                    fetch('/music/remove-from-queue', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ index }),
-                        credentials: 'include'
-                    }),
-                    new Promise((_, reject) => 
-                        setTimeout(() => reject(new Error('Timeout')), 5000)
-                    )
-                ]);
-                
-                if (!response.ok) {
-                    throw new Error(`Server returned ${response.status}: ${response.statusText}`);
-                }
-                
+                const response = await fetch('/api/music/remove-from-queue', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ index }),
+                    credentials: 'include'
+                });
                 const data = await response.json();
-
                 if (data.error) {
-                    showToast(data.error, 'error');
-                    return;
+                    throw new Error(data.error);
                 }
-
-                showToast('Removed track from queue', 'success');
-                await updateQueue();
+                updateQueue();
+                showToast('Removed from queue', 'success');
             } catch (error) {
                 console.error('Error removing from queue:', error);
                 showToast('Failed to remove from queue', 'error');

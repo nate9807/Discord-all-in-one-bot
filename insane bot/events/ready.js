@@ -35,29 +35,63 @@ const cleanupEmptyChannels = async (client, guild) => {
   for (const channelId of channelIds) {
     try {
       const channelData = createdChannels.get(channelId);
-      
+      if (!channelData) {
+        logger.warn(`[CLEANUP] No channel data found for ${channelId} in guild ${guildId}`);
+        createdChannels.delete(channelId);
+        hasChanges = true;
+        continue;
+      }
+
       // Try to fetch both voice and text channels
-      const voiceChannel = await guild.channels.fetch(channelData.vcId).catch(() => null);
-      const textChannel = channelData.textChannelId ? await guild.channels.fetch(channelData.textChannelId).catch(() => null) : null;
+      let voiceChannel = null;
+      let textChannel = null;
+
+      try {
+        voiceChannel = await guild.channels.fetch(channelData.vcId);
+      } catch (error) {
+        logger.debug(`[CLEANUP] Voice channel ${channelData.vcId} not found in guild ${guildId}`);
+      }
+
+      if (channelData.textChannelId) {
+        try {
+          textChannel = await guild.channels.fetch(channelData.textChannelId);
+        } catch (error) {
+          logger.debug(`[CLEANUP] Text channel ${channelData.textChannelId} not found in guild ${guildId}`);
+        }
+      }
       
-      // Delete if channel doesn't exist or is empty
+      // Delete if voice channel doesn't exist or is empty
       if (!voiceChannel || voiceChannel.members.size === 0) {
         // Delete text channel if it exists
         if (textChannel) {
-          await textChannel.delete().catch(err => logger.error(`[CLEANUP] Failed to delete text channel: ${err.message}`));
+          try {
+            const textChannelName = textChannel.name;
+            await textChannel.delete();
+            logger.info(`[CLEANUP] Deleted text channel "${textChannelName}" in guild ${guildId}`);
+          } catch (error) {
+            logger.error(`[CLEANUP] Failed to delete text channel in guild ${guildId}: ${error.message}`);
+          }
         }
         
         // Delete voice channel if it exists
         if (voiceChannel) {
-          await voiceChannel.delete().catch(err => logger.error(`[CLEANUP] Failed to delete voice channel: ${err.message}`));
+          try {
+            const voiceChannelName = voiceChannel.name;
+            await voiceChannel.delete();
+            logger.info(`[CLEANUP] Deleted voice channel "${voiceChannelName}" in guild ${guildId}`);
+          } catch (error) {
+            logger.error(`[CLEANUP] Failed to delete voice channel in guild ${guildId}: ${error.message}`);
+          }
         }
         
         // Remove from tracking
         createdChannels.delete(channelId);
         hasChanges = true;
+        logger.info(`[CLEANUP] Removed channel tracking for ${channelId} in guild ${guildId}`);
       }
     } catch (error) {
-      logger.error(`[CLEANUP] Error processing channel ${channelId}: ${error.message}`);
+      logger.error(`[CLEANUP] Error processing channel ${channelId} in guild ${guildId}: ${error.message}`);
+      // Remove from tracking if there was an error
       createdChannels.delete(channelId);
       hasChanges = true;
     }
@@ -67,9 +101,9 @@ const cleanupEmptyChannels = async (client, guild) => {
   if (hasChanges) {
     try {
       saveCreatedChannels(client, guildId, createdChannels);
-      logger.info(`[CLEANUP] Removed ${channelIds.length - createdChannels.size} channels from guild ${guildId}`);
+      logger.info(`[CLEANUP] Successfully removed ${channelIds.length - createdChannels.size} channels from guild ${guildId}`);
     } catch (error) {
-      logger.error(`[CLEANUP] Error saving changes: ${error.message}`);
+      logger.error(`[CLEANUP] Error saving changes for guild ${guildId}: ${error.message}`);
     }
   }
   
