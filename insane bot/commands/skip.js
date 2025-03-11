@@ -1,7 +1,7 @@
 require('dotenv').config();
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const logger = require('../utils/logger');
-const { playSong, formatDuration } = require('./play.js'); // Add .js extension for consistency
+const { playSong, formatDuration } = require('./play.js');
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -60,16 +60,38 @@ module.exports = {
         queue.liveProcess = null;
       }
 
-      // Remove skipped songs and add to history
-      const skippedSongs = queue.songs.splice(0, skipAmount);
-      skippedSongs.forEach(song => {
-        if (!song.isLive) {
-          queue.history.unshift(song);
-        }
-      });
+      // Handle queue looping and 24/7 mode
+      if (queue.loop || queue.is24_7 || queue.repeatMode === 'queue') {
+        // Move skipped songs to the end of the queue instead of removing them
+        const skippedSongs = queue.songs.splice(0, skipAmount);
+        
+        // Add copies to history first
+        skippedSongs.forEach(song => {
+          if (!song.isLive) {
+            // Create a deep copy for history to avoid reference issues
+            const songCopy = JSON.parse(JSON.stringify(song));
+            if (!queue.history) queue.history = [];
+            queue.history.unshift(songCopy);
+          }
+        });
+        
+        // Then add the original songs to the end of the queue
+        queue.songs.push(...skippedSongs);
+        
+        logger.info(`Moved ${skipAmount} song(s) to the end of the queue in guild ${guildId} (loop mode)`);
+      } else {
+        // Normal skip behavior - remove songs and add to history
+        const skippedSongs = queue.songs.splice(0, skipAmount);
+        skippedSongs.forEach(song => {
+          if (!song.isLive) {
+            if (!queue.history) queue.history = [];
+            queue.history.unshift(song);
+          }
+        });
+      }
 
       // Trim history if needed
-      if (queue.history.length > 50) {
+      if (queue.history && queue.history.length > 50) {
         queue.history = queue.history.slice(0, 50);
       }
 
@@ -78,15 +100,23 @@ module.exports = {
       logger.music(`Skipped ${skipAmount} song(s) in guild ${guildId} by ${interaction.user.tag}`);
       logger.info(`Skipped "${currentSong.title}" and ${skipAmount - 1} more songs in guild ${guildId}`);
 
+      // Determine the loop mode text
+      let modeText = 'Normal';
+      if (queue.is24_7) modeText = '24/7';
+      else if (queue.loop) modeText = 'Loop';
+      else if (queue.repeatMode === 'queue') modeText = 'Queue Loop';
+      else if (queue.repeatMode === 'song') modeText = 'Song Loop';
+
       const embed = new EmbedBuilder()
         .setColor('#00FFFF')
         .setTitle('⏭️ Skipped')
         .setDescription(skipAmount === 1
-          ? `Skipped **${currentSong.title}**`
-          : `Skipped **${skipAmount}** songs, including **${currentSong.title}**`)
+          ? `Skipped **${currentSong.title}**${(queue.loop || queue.repeatMode === 'queue') ? ' (will play again later)' : ''}`
+          : `Skipped **${skipAmount}** songs, including **${currentSong.title}**${(queue.loop || queue.repeatMode === 'queue') ? ' (will play again later)' : ''}`)
         .addFields(
           { name: 'Remaining', value: `${queue.songs.length} songs in queue`, inline: true },
-          { name: 'Next Up', value: queue.songs[0] ? `${queue.songs[0].title}` : 'Nothing - queue ended', inline: true }
+          { name: 'Next Up', value: queue.songs[0] ? `${queue.songs[0].title}` : 'Nothing - queue ended', inline: true },
+          { name: 'Mode', value: modeText, inline: true }
         )
         .setTimestamp();
 
@@ -94,27 +124,29 @@ module.exports = {
 
       // Start playing next song if queue not empty
       if (queue.songs.length > 0) {
-        const { playSong } = require('./play.js');
         await playSong(guildId, queue, interaction.channel, client);
       } else {
         queue.playing = false;
         queue.isSkipping = false;
         client.queues.set(guildId, queue);
         
-        const endEmbed = new EmbedBuilder()
-          .setColor('#FF0000')
-          .setTitle('Queue Ended')
-          .setDescription('No more songs in queue. Leaving voice channel...')
-          .setTimestamp();
-        
-        await interaction.channel.send({ embeds: [endEmbed] });
-        
-        // Cleanup and leave
-        if (queue.connection) {
-          queue.connection.destroy();
+        // Only send end message and cleanup if not in 24/7 mode
+        if (!queue.is24_7) {
+          const endEmbed = new EmbedBuilder()
+            .setColor('#FF0000')
+            .setTitle('Queue Ended')
+            .setDescription('No more songs in queue. Leaving voice channel...')
+            .setTimestamp();
+          
+          await interaction.channel.send({ embeds: [endEmbed] });
+          
+          // Cleanup and leave
+          if (queue.connection) {
+            queue.connection.destroy();
+          }
+          client.queues.delete(guildId);
+          logger.music(`Queue ended after skip in guild ${guildId}`);
         }
-        client.queues.delete(guildId);
-        logger.music(`Queue ended after skip in guild ${guildId}`);
       }
     } catch (error) {
       logger.error(`Skip command error in guild ${guildId}:`, error);

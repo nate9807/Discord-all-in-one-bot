@@ -1,5 +1,6 @@
 const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits, ChannelType } = require('discord.js');
 const logger = require('../utils/logger');
+const fs = require('fs').promises;
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -130,13 +131,78 @@ module.exports = {
           .setTimestamp();
         await interaction.editReply({ embeds: [embed] });
       } else if (subcommand === 'list') {
+        // Read from settings file to ensure we have the most up-to-date data
+        let settingsFileChannels = [];
+        let inMemoryChannels = triggerChannels;
+        let missingChannels = [];
+        
+        try {
+          // Get settings file path from environment
+          const settingsFile = process.env.ABSOLUTE_SETTINGS_PATH;
+          if (settingsFile) {
+            // Read and parse settings file
+            const data = await fs.readFile(settingsFile, 'utf8');
+            const settings = JSON.parse(data);
+            
+            // Get join-to-create settings for this guild
+            const settingsKey = `${interaction.guild.id}:jointocreate`;
+            settingsFileChannels = settings[settingsKey] || [];
+            
+            // Find channels in settings file but not in memory
+            if (settingsFileChannels.length > 0) {
+              // Check for channels in settings file but not in memory
+              missingChannels = settingsFileChannels.filter(fileChannel => 
+                !inMemoryChannels.some(memChannel => memChannel.channelId === fileChannel.channelId)
+              );
+              
+              // If we found missing channels, update the in-memory settings
+              if (missingChannels.length > 0) {
+                logger.info(`Found ${missingChannels.length} join-to-create channels in settings file that weren't in memory for guild ${interaction.guild.id}`);
+                
+                // Update in-memory settings with all channels from file
+                client.settings.set(settingsKey, settingsFileChannels);
+                inMemoryChannels = settingsFileChannels;
+              }
+            }
+          }
+        } catch (error) {
+          logger.error(`Error reading settings file for join-to-create list: ${error.message}`);
+          // Continue with in-memory settings if there's an error
+        }
+        
+        // Format channel list with status indicators
+        const formatChannelList = (channels) => {
+          return channels.map(tc => {
+            // Try to fetch the channel to check if it exists
+            const channel = interaction.guild.channels.cache.get(tc.channelId);
+            const status = channel ? "✅" : "❌";
+            return `${status} <#${tc.channelId}> (${tc.mode}, limit: ${tc.userLimit})`;
+          }).join('\n') || 'None';
+        };
+        
         const embed = new EmbedBuilder()
           .setTitle('Join-to-Create VC Triggers')
-          .setDescription(
-            `Current triggers: ${triggerChannels.length ? triggerChannels.map(tc => `<#${tc.channelId}> (${tc.mode}, limit: ${tc.userLimit})`).join(', ') : 'None'}`
-          )
           .setColor('#00FFFF')
           .setTimestamp();
+        
+        // Add field for channels
+        embed.addFields({ 
+          name: 'Current Triggers', 
+          value: formatChannelList(inMemoryChannels)
+        });
+        
+        // Add note if channels were recovered from settings file
+        if (missingChannels.length > 0) {
+          embed.addFields({ 
+            name: 'Recovered Channels', 
+            value: `Recovered ${missingChannels.length} channels from settings file that weren't loaded in memory.`
+          });
+          
+          embed.setFooter({ 
+            text: '✅ = Channel exists | ❌ = Channel may have been deleted' 
+          });
+        }
+        
         await interaction.editReply({ embeds: [embed] });
       } else if (subcommand === 'set-limit') {
         const channel = interaction.options.getChannel('channel');

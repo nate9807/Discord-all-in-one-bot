@@ -164,5 +164,62 @@ module.exports = {
         }
       }
     }
+    
+    // Handle voice channel control buttons
+    if (interaction.isButton() && interaction.customId.startsWith('vc_')) {
+      logger.info(`Processing voice channel button interaction: ${interaction.customId}`);
+      
+      // Import the handler function from voiceStateUpdate.js
+      const { handleVoiceChannelInteraction } = require('./voiceStateUpdate');
+      
+      try {
+        // Call the handler function
+        await handleVoiceChannelInteraction(interaction, client);
+      } catch (error) {
+        logger.error(`Error handling voice channel button ${interaction.customId}:`, error);
+        
+        try {
+          if (!interaction.replied) {
+            await interaction.reply({
+              content: `There was an error processing this button: ${error.message}`,
+              ephemeral: true
+            });
+          }
+        } catch (replyError) {
+          logger.error('Failed to send error response:', replyError);
+        }
+      }
+    }
+    
+    // Handle modal submissions for voice channels
+    if (interaction.isModalSubmit() && 
+        (interaction.customId === 'limit_modal' || 
+         interaction.customId === 'name_modal' || 
+         interaction.customId === 'bitrate_modal' || 
+         interaction.customId === 'invite_modal' || 
+         interaction.customId === 'kick_modal')) {
+      logger.info(`Processing voice channel modal submission: ${interaction.customId}`);
+      
+      // Import the handler function from voiceStateUpdate.js
+      const { handleVoiceChannelInteraction } = require('./voiceStateUpdate');
+      
+      try {
+        // Call the handler function
+        await handleVoiceChannelInteraction(interaction, client);
+      } catch (error) {
+        logger.error(`Error handling voice channel modal ${interaction.customId}:`, error);
+        
+        try {
+          if (!interaction.replied) {
+            await interaction.reply({
+              content: `There was an error processing this form: ${error.message}`,
+              ephemeral: true
+            });
+          }
+        } catch (replyError) {
+          logger.error('Failed to send error response:', replyError);
+        }
+      }
+    }
   },
 }; 

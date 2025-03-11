@@ -107,24 +107,208 @@ client.queues = new Map();
 
 // Add memory management
 const checkMemoryUsage = () => {
+    // Get memory configuration from environment variables or use defaults
+    const memoryLimitMB = parseInt(process.env.MEMORY_LIMIT_MB) || 0; // 0 means no limit
+    const memoryWarnThreshold = parseFloat(process.env.MEMORY_WARN_THRESHOLD) || 0.8; // 80% by default
+    const memoryCriticalThreshold = parseFloat(process.env.MEMORY_CRITICAL_THRESHOLD) || 0.9; // 90% by default
+    
     const used = process.memoryUsage();
     const heapUsed = Math.round(used.heapUsed / 1024 / 1024);
     const heapTotal = Math.round(used.heapTotal / 1024 / 1024);
+    const rss = Math.round(used.rss / 1024 / 1024);
     
-    // Log memory usage if it's getting high
-    if (heapUsed > heapTotal * 0.8) {
-        logger.warn(`High memory usage - Heap: ${heapUsed}MB / ${heapTotal}MB`);
+    // If memory limit is set to 0, only log memory usage without warnings
+    if (memoryLimitMB === 0) {
+        // Log memory usage every 10 minutes for monitoring
+        if (Date.now() % (10 * 60 * 1000) < 1000) {
+            logger.info(`Memory usage - Heap: ${heapUsed}MB / ${heapTotal}MB (RSS: ${rss}MB) - No limit set`);
+        }
+        return;
+    }
+    
+    // Calculate usage ratio against configured limit
+    const usageRatio = memoryLimitMB > 0 ? rss / memoryLimitMB : heapUsed / heapTotal;
+    
+    // Log memory usage based on thresholds
+    if (usageRatio > memoryCriticalThreshold) {
+        logger.error(`CRITICAL memory usage - ${rss}MB / ${memoryLimitMB > 0 ? `${memoryLimitMB}MB limit` : `${heapTotal}MB heap`} (${Math.round(usageRatio * 100)}%)`);
+        performMemoryCleanup(true); // Force aggressive cleanup
+    } else if (usageRatio > memoryWarnThreshold) {
+        logger.warn(`High memory usage - ${rss}MB / ${memoryLimitMB > 0 ? `${memoryLimitMB}MB limit` : `${heapTotal}MB heap`} (${Math.round(usageRatio * 100)}%)`);
+        performMemoryCleanup(false); // Normal cleanup
+    } else if (Date.now() % (10 * 60 * 1000) < 1000) {
+        // Log normal memory usage every 10 minutes
+        logger.info(`Memory usage - ${rss}MB / ${memoryLimitMB > 0 ? `${memoryLimitMB}MB limit` : `${heapTotal}MB heap`} (${Math.round(usageRatio * 100)}%)`);
+    }
+};
+
+// Memory cleanup function
+const performMemoryCleanup = (aggressive = false) => {
+    try {
+        logger.info(`Performing ${aggressive ? 'aggressive' : 'standard'} memory cleanup`);
+        
+        // Clear command cooldowns that are expired
+        const now = Date.now();
+        let cooldownsCleared = 0;
+        for (const [commandName, timestamps] of client.cooldowns.entries()) {
+            const initialSize = timestamps.size;
+            for (const [userId, expireTime] of timestamps.entries()) {
+                if (now > expireTime) {
+                    timestamps.delete(userId);
+                    cooldownsCleared++;
+                }
+            }
+            // If no timestamps left for this command, remove the command entry
+            if (timestamps.size === 0) {
+                client.cooldowns.delete(commandName);
+            }
+        }
+        
+        // Trim music queue history if it's getting large
+        let queueHistoryTrimmed = 0;
+        for (const [guildId, queue] of client.queues.entries()) {
+            if (queue && queue.history) {
+                const initialLength = queue.history.length;
+                // In aggressive mode, keep fewer items
+                const keepItems = aggressive ? 10 : 50;
+                if (initialLength > keepItems) {
+                    queue.history = queue.history.slice(-keepItems);
+                    queueHistoryTrimmed += (initialLength - queue.history.length);
+                }
+            }
+        }
+        
+        // Clear any cached data that's not needed
+        let cacheItemsCleared = 0;
+        if (client.voiceManager && client.voiceManager.cache) {
+            // Clear voice manager cache
+            // In aggressive mode, clear all cache, otherwise only clear old entries
+            if (aggressive) {
+                cacheItemsCleared = Object.keys(client.voiceManager.cache).length;
+                client.voiceManager.cache = {};
+            } else {
+                const thirtyMinutesAgo = Date.now() - 30 * 60 * 1000;
+                for (const [key, data] of Object.entries(client.voiceManager.cache)) {
+                    if (data.timestamp && data.timestamp < thirtyMinutesAgo) {
+                        delete client.voiceManager.cache[key];
+                        cacheItemsCleared++;
+                    }
+                }
+            }
+        }
+        
+        // In aggressive mode, disconnect from idle voice channels
+        let connectionsCleared = 0;
+        if (aggressive && client.voice && client.voice.connections) {
+            const connections = Array.from(client.voice.connections.values());
+            for (const connection of connections) {
+                // Check if connection is idle (no one in voice channel)
+                const channel = connection.channel;
+                if (channel && channel.members.size <= 1) { // Only bot in channel
+                    connection.disconnect();
+                    connectionsCleared++;
+                }
+            }
+        }
         
         // Force garbage collection if available
         if (global.gc) {
             global.gc();
             logger.info('Forced garbage collection');
         }
+        
+        // Log memory after cleanup
+        const afterCleanup = process.memoryUsage();
+        const heapAfter = Math.round(afterCleanup.heapUsed / 1024 / 1024);
+        const rssAfter = Math.round(afterCleanup.rss / 1024 / 1024);
+        logger.info(`Memory after cleanup: ${heapAfter}MB heap, ${rssAfter}MB RSS. Cleared: ${cooldownsCleared} cooldowns, ${queueHistoryTrimmed} history items, ${cacheItemsCleared} cache items, ${connectionsCleared} connections`);
+    } catch (error) {
+        logger.error('Error during memory cleanup:', error);
     }
 };
 
-// Check memory usage periodically
-setInterval(checkMemoryUsage, 300000); // Every 5 minutes
+// Check memory usage with adaptive frequency
+const adaptiveMemoryCheck = () => {
+    // Get memory configuration from environment variables
+    const memoryLimitMB = parseInt(process.env.MEMORY_LIMIT_MB) || 0;
+    
+    // If unlimited memory is enabled, just do minimal checks
+    if (memoryLimitMB === 0) {
+        // Only log memory usage occasionally without any cleanup
+        const used = process.memoryUsage();
+        const heapUsed = Math.round(used.heapUsed / 1024 / 1024);
+        const heapTotal = Math.round(used.heapTotal / 1024 / 1024);
+        const rss = Math.round(used.rss / 1024 / 1024);
+        
+        // Log memory usage every 30 minutes for monitoring
+        if (Date.now() % (30 * 60 * 1000) < 1000) {
+            logger.info(`Memory usage (unlimited mode) - Heap: ${heapUsed}MB / ${heapTotal}MB (RSS: ${rss}MB)`);
+        }
+        
+        // Check again in 30 minutes
+        setTimeout(adaptiveMemoryCheck, 30 * 60 * 1000);
+        return;
+    }
+    
+    // Normal memory check for limited mode
+    checkMemoryUsage();
+    
+    // Get memory configuration from environment variables or use defaults
+    const memoryCheckFrequency = parseInt(process.env.MEMORY_CHECK_FREQUENCY) || 0; // 0 means adaptive
+    
+    if (memoryCheckFrequency > 0) {
+        // Use fixed frequency from environment variable (in seconds)
+        setTimeout(adaptiveMemoryCheck, memoryCheckFrequency * 1000);
+        return;
+    }
+    
+    // Adjust check frequency based on current memory usage
+    const used = process.memoryUsage();
+    const heapUsed = Math.round(used.heapUsed / 1024 / 1024);
+    const heapTotal = Math.round(used.heapTotal / 1024 / 1024);
+    const rss = Math.round(used.rss / 1024 / 1024);
+    
+    const usageRatio = memoryLimitMB > 0 ? rss / memoryLimitMB : heapUsed / heapTotal;
+    
+    let checkInterval;
+    if (usageRatio > 0.9) {
+        // Very high usage - check every minute
+        checkInterval = 60000;
+    } else if (usageRatio > 0.8) {
+        // High usage - check every 2 minutes
+        checkInterval = 120000;
+    } else if (usageRatio > 0.7) {
+        // Moderate usage - check every 3 minutes
+        checkInterval = 180000;
+    } else {
+        // Normal usage - check every 5 minutes
+        checkInterval = 300000;
+    }
+    
+    // Schedule next check
+    setTimeout(adaptiveMemoryCheck, checkInterval);
+};
+
+// Start adaptive memory checking
+setTimeout(() => {
+    // Log memory configuration
+    const memoryLimitMB = parseInt(process.env.MEMORY_LIMIT_MB) || 0;
+    const memoryWarnThreshold = parseFloat(process.env.MEMORY_WARN_THRESHOLD) || 0.8;
+    const memoryCriticalThreshold = parseFloat(process.env.MEMORY_CRITICAL_THRESHOLD) || 0.9;
+    const memoryCheckFrequency = parseInt(process.env.MEMORY_CHECK_FREQUENCY) || 0;
+    
+    logger.info(`Memory management initialized with: ${memoryLimitMB === 0 ? 'No limit' : `${memoryLimitMB}MB limit`}, ` +
+                `warn at ${Math.round(memoryWarnThreshold * 100)}%, critical at ${Math.round(memoryCriticalThreshold * 100)}%, ` +
+                `check frequency: ${memoryCheckFrequency === 0 ? 'adaptive' : `${memoryCheckFrequency}s`}`);
+    
+    adaptiveMemoryCheck();
+}, 60000); // First check after 1 minute
+
+// Run garbage collection on startup if available
+if (global.gc) {
+    global.gc();
+    logger.info('Initial garbage collection performed');
+}
 
 // Enhanced shutdown handling
 async function shutdownShard(signal) {
@@ -209,6 +393,7 @@ process.on('uncaughtException', async (error) => {
 // Saving settings flag to prevent concurrent writes
 let isSavingSettings = false;
 let settingsWriteQueue = [];
+let lastSuccessfulSettings = null; // Store last known good settings
 
 // Load settings if they exist
 const settingsFile = process.env.ABSOLUTE_SETTINGS_PATH;
@@ -228,6 +413,21 @@ const loadSettings = async () => {
         
         // Handle empty files
         if (!data.trim()) {
+            // Check if we have a backup before creating an empty file
+            if (lastSuccessfulSettings) {
+                logger.warn(`Settings file ${settingsFile} is empty, restoring from memory backup`);
+                await fsPromises.writeFile(settingsFile, JSON.stringify(lastSuccessfulSettings, null, 2), 'utf8');
+                
+                // Load settings into client
+                client.settings = new Map();
+                for (const [key, value] of Object.entries(lastSuccessfulSettings)) {
+                    client.settings.set(key, value);
+                }
+                
+                logger.info(`Restored ${client.settings.size} settings from memory backup`);
+                return;
+            }
+            
             logger.warn(`Settings file ${settingsFile} is empty, creating new settings`);
             await fsPromises.writeFile(settingsFile, '{}', 'utf8');
             client.settings = new Map();
@@ -239,55 +439,72 @@ const loadSettings = async () => {
         try {
             // Normal parsing attempt
             settingsData = JSON.parse(data);
+            
+            // Store successful settings as backup
+            lastSuccessfulSettings = settingsData;
         } catch (parseError) {
             logger.error(`Error parsing settings file: ${parseError.message}`);
             
-            // Attempt to recover corrupted JSON
-            try {
-                // Create a backup of corrupted file
-                const backupPath = `${settingsFile}.corrupt.${Date.now()}`;
-                await fsPromises.writeFile(backupPath, data, 'utf8');
-                logger.info(`Backed up corrupted settings to ${backupPath}`);
+            // Check if we have a backup before attempting recovery
+            if (lastSuccessfulSettings) {
+                logger.info(`Using memory backup instead of attempting recovery`);
+                settingsData = lastSuccessfulSettings;
                 
-                // Try to recover by finding the last complete object
-                let recoveredData = '{}';
-                if (data.trim().startsWith('{')) {
-                    // Look for the last balanced closing bracket
-                    let openBrackets = 0;
-                    let lastValidIndex = -1;
+                // Write the backup to the file
+                await fsPromises.writeFile(settingsFile, JSON.stringify(lastSuccessfulSettings, null, 2), 'utf8');
+                logger.info(`Restored settings file from memory backup with ${Object.keys(lastSuccessfulSettings).length} entries`);
+            } else {
+                // Attempt to recover corrupted JSON
+                try {
+                    // Create a backup of corrupted file
+                    const backupPath = `${settingsFile}.corrupt.${Date.now()}`;
+                    await fsPromises.writeFile(backupPath, data, 'utf8');
+                    logger.info(`Backed up corrupted settings to ${backupPath}`);
                     
-                    for (let i = 0; i < data.length; i++) {
-                        if (data[i] === '{') openBrackets++;
-                        else if (data[i] === '}') openBrackets--;
+                    // Try to recover by finding the last complete object
+                    let recoveredData = '{}';
+                    if (data.trim().startsWith('{')) {
+                        // Look for the last balanced closing bracket
+                        let openBrackets = 0;
+                        let lastValidIndex = -1;
                         
-                        if (openBrackets === 0) lastValidIndex = i;
-                    }
-                    
-                    if (lastValidIndex > 0) {
-                        // Extract the valid part of the JSON
-                        recoveredData = data.substring(0, lastValidIndex + 1);
-                        try {
-                            // Validate the extracted JSON
-                            JSON.parse(recoveredData);
-                            logger.info(`Successfully recovered settings data from corrupted file`);
-                        } catch {
-                            // If still invalid, fall back to empty object
-                            recoveredData = '{}';
-                            logger.warn(`Recovery attempt failed, using empty settings`);
+                        for (let i = 0; i < data.length; i++) {
+                            if (data[i] === '{') openBrackets++;
+                            else if (data[i] === '}') openBrackets--;
+                            
+                            if (openBrackets === 0) lastValidIndex = i;
+                        }
+                        
+                        if (lastValidIndex > 0) {
+                            // Extract the valid part of the JSON
+                            recoveredData = data.substring(0, lastValidIndex + 1);
+                            try {
+                                // Validate the extracted JSON
+                                JSON.parse(recoveredData);
+                                logger.info(`Successfully recovered settings data from corrupted file`);
+                            } catch {
+                                // If still invalid, fall back to empty object
+                                recoveredData = '{}';
+                                logger.warn(`Recovery attempt failed, using empty settings`);
+                            }
                         }
                     }
+                    
+                    // Write the recovered or empty data back to the settings file
+                    await fsPromises.writeFile(settingsFile, recoveredData, 'utf8');
+                    settingsData = JSON.parse(recoveredData);
+                    
+                    // Store recovered settings as backup
+                    lastSuccessfulSettings = settingsData;
+                    
+                    logger.info(`Settings file restored with ${Object.keys(settingsData).length} entries`);
+                } catch (recoveryError) {
+                    // If recovery fails, create a new settings file
+                    logger.error(`Failed to recover settings: ${recoveryError.message}`);
+                    await fsPromises.writeFile(settingsFile, '{}', 'utf8');
+                    settingsData = {};
+                    logger.warn(`Created new empty settings file`);
                 }
-                
-                // Write the recovered or empty data back to the settings file
-                await fsPromises.writeFile(settingsFile, recoveredData, 'utf8');
-                settingsData = JSON.parse(recoveredData);
-                logger.info(`Settings file restored with ${Object.keys(settingsData).length} entries`);
-            } catch (recoveryError) {
-                // If recovery fails, create a new settings file
-                logger.error(`Failed to recover settings: ${recoveryError.message}`);
-                await fsPromises.writeFile(settingsFile, '{}', 'utf8');
-                settingsData = {};
-                logger.warn(`Created new empty settings file`);
             }
         }
         
@@ -301,6 +518,27 @@ const loadSettings = async () => {
     } catch (error) {
         if (!handleNonFatalError(error, 'settings load')) {
             logger.warn(`Error loading settings from ${settingsFile}: ${error.message}`);
+            
+            // Check if we have a backup before creating an empty file
+            if (lastSuccessfulSettings) {
+                logger.info(`Using memory backup instead of creating empty settings`);
+                
+                try {
+                    // Write the backup to the file
+                    await fsPromises.writeFile(settingsFile, JSON.stringify(lastSuccessfulSettings, null, 2), 'utf8');
+                    
+                    // Load settings into client
+                    client.settings = new Map();
+                    for (const [key, value] of Object.entries(lastSuccessfulSettings)) {
+                        client.settings.set(key, value);
+                    }
+                    
+                    logger.info(`Restored ${client.settings.size} settings from memory backup`);
+                    return;
+                } catch (writeError) {
+                    logger.error(`Failed to restore from memory backup: ${writeError.message}`);
+                }
+            }
             
             // Try to create a fresh settings file if there was an error
             try {
@@ -330,8 +568,26 @@ const saveSettings = async () => {
             settingsData[key] = value;
         }
         
+        // Store current settings as backup before saving
+        lastSuccessfulSettings = settingsData;
+        
         // Create a temporary file for atomic write
         const tmpFile = `${settingsFile}.tmp`;
+        
+        // Create a backup file before saving
+        const backupFile = `${settingsFile}.backup`;
+        try {
+            // Only create backup if the original file exists and has content
+            if (await fsPromises.access(settingsFile).then(() => true).catch(() => false)) {
+                const currentData = await fsPromises.readFile(settingsFile, 'utf8');
+                if (currentData && currentData.trim() !== '{}') {
+                    await fsPromises.writeFile(backupFile, currentData, 'utf8');
+                    logger.info(`Created settings backup at ${backupFile}`);
+                }
+            }
+        } catch (backupError) {
+            logger.warn(`Failed to create settings backup: ${backupError.message}`);
+        }
         
         // Write with retry logic
         let attempts = 0;
@@ -382,6 +638,20 @@ const saveSettings = async () => {
     } catch (error) {
         if (!handleNonFatalError(error, 'settings save')) {
             logger.error(`Error saving settings: ${error.message}`);
+            
+            // Try to restore from backup if save failed
+            try {
+                const backupFile = `${settingsFile}.backup`;
+                if (await fsPromises.access(backupFile).then(() => true).catch(() => false)) {
+                    const backupData = await fsPromises.readFile(backupFile, 'utf8');
+                    if (backupData && backupData.trim() !== '{}') {
+                        await fsPromises.writeFile(settingsFile, backupData, 'utf8');
+                        logger.info(`Restored settings from backup file after failed save`);
+                    }
+                }
+            } catch (restoreError) {
+                logger.error(`Failed to restore settings from backup: ${restoreError.message}`);
+            }
         }
     } finally {
         isSavingSettings = false;
@@ -597,4 +867,90 @@ client.isAdmin = (userId) => {
 };
 
 // Start the bot
-startBot(); 
+startBot();
+
+// Add periodic settings backup
+const createPeriodicBackup = async () => {
+    if (!settingsFile) return;
+    
+    try {
+        // Only create backup if settings exist and have content
+        if (client.settings && client.settings.size > 0) {
+            const backupDir = path.join(__dirname, 'settings_backups');
+            
+            // Create backup directory if it doesn't exist
+            await fsPromises.mkdir(backupDir, { recursive: true });
+            
+            // Create timestamped backup file
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const backupFile = path.join(backupDir, `settings_${timestamp}.json`);
+            
+            // Get settings data
+            const settingsData = {};
+            for (const [key, value] of client.settings.entries()) {
+                settingsData[key] = value;
+            }
+            
+            // Write backup file
+            await fsPromises.writeFile(backupFile, JSON.stringify(settingsData, null, 2), 'utf8');
+            logger.info(`Created periodic settings backup at ${backupFile}`);
+            
+            // Clean up old backups (keep last 24)
+            const backupFiles = await fsPromises.readdir(backupDir);
+            if (backupFiles.length > 24) {
+                // Sort files by creation time (oldest first)
+                const sortedFiles = backupFiles
+                    .filter(file => file.startsWith('settings_'))
+                    .map(file => ({
+                        name: file,
+                        path: path.join(backupDir, file),
+                        time: fs.statSync(path.join(backupDir, file)).mtime.getTime()
+                    }))
+                    .sort((a, b) => a.time - b.time);
+                
+                // Delete oldest files
+                const filesToDelete = sortedFiles.slice(0, sortedFiles.length - 24);
+                for (const file of filesToDelete) {
+                    await fsPromises.unlink(file.path);
+                    logger.info(`Deleted old settings backup: ${file.name}`);
+                }
+            }
+        }
+    } catch (error) {
+        logger.error(`Error creating periodic settings backup: ${error.message}`);
+    }
+};
+
+// Run backup every hour
+setInterval(createPeriodicBackup, 60 * 60 * 1000);
+
+// Also run backup on process exit
+process.on('exit', () => {
+    // Use sync methods since we're exiting
+    try {
+        if (client.settings && client.settings.size > 0 && settingsFile) {
+            const backupDir = path.join(__dirname, 'settings_backups');
+            
+            // Create backup directory if it doesn't exist
+            if (!fs.existsSync(backupDir)) {
+                fs.mkdirSync(backupDir, { recursive: true });
+            }
+            
+            // Create exit backup file
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const backupFile = path.join(backupDir, `settings_exit_${timestamp}.json`);
+            
+            // Get settings data
+            const settingsData = {};
+            for (const [key, value] of client.settings.entries()) {
+                settingsData[key] = value;
+            }
+            
+            // Write backup file
+            fs.writeFileSync(backupFile, JSON.stringify(settingsData, null, 2), 'utf8');
+            console.log(`Created exit settings backup at ${backupFile}`);
+        }
+    } catch (error) {
+        console.error(`Error creating exit settings backup: ${error.message}`);
+    }
+}); 

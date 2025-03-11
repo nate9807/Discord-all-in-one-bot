@@ -324,21 +324,103 @@ async function playSong(guildId, queue, channel, client) {
     } else {
       // Handle regular videos
       try {
-        stream = ytdl(song.url, {
-          filter: 'audioonly',
-          quality: 'highestaudio',
-          highWaterMark: 1 << 25, // 32MB buffer
-          requestOptions: {
-            headers: {
-              Cookie: process.env.YOUTUBE_COOKIE || ''
+        // First attempt with ytdl-core
+        try {
+          stream = ytdl(song.url, {
+            filter: 'audioonly',
+            quality: 'highestaudio',
+            highWaterMark: 1 << 25, // 32MB buffer
+            requestOptions: {
+              headers: {
+                Cookie: process.env.YOUTUBE_COOKIE || '',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept-Language': 'en-US,en;q=0.9'
+              }
             }
-          }
-        });
+          });
 
-        stream.on('error', (error) => {
-          logger.error(`Stream error for "${song.title}" in guild ${guildId}:`, error);
-          skipSong(guildId, queue, channel, client);
-        });
+          // Set up error handler for the stream
+          stream.on('error', async (error) => {
+            logger.error(`Stream error for "${song.title}" in guild ${guildId}:`, error);
+            
+            // If it's a 403 error, try the fallback method
+            if (error.message.includes('403') || error.message.includes('Status code: 403')) {
+              logger.info(`Attempting fallback streaming method for "${song.title}" in guild ${guildId}`);
+              
+              try {
+                // Try using youtube-dl as a fallback
+                const process = youtubedl.exec(song.url, {
+                  format: 'bestaudio/best',
+                  output: '-',
+                  quiet: true,
+                  limitRate: '1M'
+                });
+                
+                if (queue.player) {
+                  const fallbackResource = createAudioResource(process.stdout, {
+                    inlineVolume: true,
+                    inputType: 'raw'
+                  });
+                  
+                  fallbackResource.volume?.setVolume(queue.volume);
+                  queue.player.play(fallbackResource);
+                  
+                  // Update queue with the process for cleanup
+                  queue.liveProcess = process;
+                  client.queues.set(guildId, queue);
+                  
+                  logger.info(`Successfully switched to fallback streaming for "${song.title}" in guild ${guildId}`);
+                  
+                  // Send message to channel about the fallback
+                  if (channel) {
+                    channel.send({
+                      content: `⚠️ Encountered streaming issues with "${song.title}". Switched to alternative streaming method.`
+                    }).catch(err => logger.error(`Failed to send fallback message: ${err.message}`));
+                  }
+                  
+                  return; // Successfully switched to fallback
+                }
+              } catch (fallbackError) {
+                logger.error(`Fallback streaming method failed for "${song.title}" in guild ${guildId}:`, fallbackError);
+                // If fallback fails, skip the song
+                skipSong(guildId, queue, channel, client);
+                return;
+              }
+            } else {
+              // For other errors, skip the song
+              skipSong(guildId, queue, channel, client);
+            }
+          });
+        } catch (ytdlError) {
+          logger.error(`Failed to create ytdl stream for "${song.title}" in guild ${guildId}:`, ytdlError);
+          
+          // Try youtube-dl directly as fallback
+          try {
+            logger.info(`Attempting youtube-dl fallback for "${song.title}" in guild ${guildId}`);
+            const process = youtubedl.exec(song.url, {
+              format: 'bestaudio/best',
+              output: '-',
+              quiet: true,
+              limitRate: '1M'
+            });
+            
+            stream = process.stdout;
+            queue.liveProcess = process;
+            
+            logger.info(`Successfully created youtube-dl stream for "${song.title}" in guild ${guildId}`);
+            
+            // Send message to channel about the fallback
+            if (channel) {
+              channel.send({
+                content: `⚠️ Using alternative streaming method for "${song.title}".`
+              }).catch(err => logger.error(`Failed to send fallback message: ${err.message}`));
+            }
+          } catch (fallbackError) {
+            logger.error(`All streaming methods failed for "${song.title}" in guild ${guildId}:`, fallbackError);
+            skipSong(guildId, queue, channel, client);
+            return;
+          }
+        }
       } catch (error) {
         logger.error(`Failed to create stream for "${song.title}" in guild ${guildId}:`, error);
         skipSong(guildId, queue, channel, client);
@@ -445,12 +527,61 @@ function setupPlayerListeners(guildId, queue, channel, client) {
     await playSong(guildId, queue, channel, client);
   });
 
-  queue.player.on('error', (err) => {
+  queue.player.on('error', async (err) => {
     const song = queue.songs[0] || { title: 'Unknown' };
     logger.error(`Player error for "${song.title}" in guild ${guildId}:`, err.message);
-    if (!queue.isSkipping) {
-      channel.send({ content: `Player error: ${err.message}, skipping...` });
-      skipSong(guildId, queue, channel, client);
+    
+    // Check if it's a 403 error
+    if (err.message.includes('403') || err.message.includes('Status code: 403')) {
+      logger.info(`Attempting to recover from 403 error for "${song.title}" in guild ${guildId}`);
+      
+      try {
+        // Try using youtube-dl as a fallback
+        const process = youtubedl.exec(song.url, {
+          format: 'bestaudio/best',
+          output: '-',
+          quiet: true,
+          limitRate: '1M'
+        });
+        
+        const fallbackResource = createAudioResource(process.stdout, {
+          inlineVolume: true,
+          inputType: 'raw'
+        });
+        
+        fallbackResource.volume?.setVolume(queue.volume);
+        
+        // Update queue with the process for cleanup
+        queue.liveProcess = process;
+        client.queues.set(guildId, queue);
+        
+        // Play with the fallback resource
+        queue.player.play(fallbackResource);
+        
+        logger.info(`Successfully recovered from 403 error for "${song.title}" in guild ${guildId}`);
+        
+        // Send message to channel about the recovery
+        if (channel) {
+          channel.send({
+            content: `⚠️ Encountered streaming issues with "${song.title}". Switched to alternative streaming method.`
+          }).catch(err => logger.error(`Failed to send recovery message: ${err.message}`));
+        }
+        
+        return; // Successfully recovered
+      } catch (fallbackError) {
+        logger.error(`Failed to recover from 403 error for "${song.title}" in guild ${guildId}:`, fallbackError);
+        // If recovery fails, skip the song
+        if (!queue.isSkipping) {
+          channel.send({ content: `Failed to play "${song.title}" due to streaming restrictions. Skipping...` });
+          skipSong(guildId, queue, channel, client);
+        }
+      }
+    } else {
+      // For other errors, skip the song
+      if (!queue.isSkipping) {
+        channel.send({ content: `Player error: ${err.message}, skipping...` });
+        skipSong(guildId, queue, channel, client);
+      }
     }
   });
 }
@@ -551,10 +682,26 @@ function cleanupQueue(guildId, client) {
 }
 
 function formatDuration(seconds) {
+  if (!seconds || isNaN(seconds)) return 'Unknown';
+  if (seconds === Infinity) return 'LIVE';
+  
+  // Ensure seconds is a number and round to nearest integer
+  seconds = Math.round(Number(seconds));
+  
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const secs = seconds % 60;
-  return `${hours ? `${hours}:` : ''}${minutes < 10 && hours ? '0' : ''}${minutes}:${secs < 10 ? '0' : ''}${secs}`;
+  
+  // Format with leading zeros
+  const formattedMinutes = minutes.toString().padStart(2, '0');
+  const formattedSeconds = secs.toString().padStart(2, '0');
+  
+  // Only include hours if there are any
+  if (hours > 0) {
+    return `${hours}:${formattedMinutes}:${formattedSeconds}`;
+  } else {
+    return `${minutes}:${formattedSeconds}`;
+  }
 }
 
 function extractVideoId(url) {

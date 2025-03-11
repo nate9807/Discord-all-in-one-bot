@@ -304,33 +304,155 @@ module.exports = {
 
       // Process Disboard bump messages
       if (message.author.bot && message.author.id === DISBOARD_BOT_ID) {
-        logger.info(`Disboard message detected - Embeds available: ${message.embeds.length > 0}`);
-        if (message.embeds.length > 0) {
-          const embed = message.embeds[0];
-          const hasBumpEmbed = embed.description && /Bump done!/i.test(embed.description);
-
-          if (hasBumpEmbed) {
-            try {
-              const channelId = message.channel.id;
+        logger.info(`Disboard message detected in ${message.guild.name} (${message.guild.id})`);
+        
+        // Check for successful bump message
+        const hasBumpEmbed = message.embeds.length > 0 && 
+          message.embeds[0].description && 
+          (
+            message.embeds[0].description.includes('Bump done!') ||
+            message.embeds[0].description.includes('Check it out on DISBOARD') ||
+            /Server bumped by/i.test(message.embeds[0].description)
+          );
+        
+        // Also check message content for "Bump done" text
+        const hasBumpText = message.content.includes('Bump done!');
+        
+        if (hasBumpEmbed || hasBumpText) {
+          try {
+            logger.info(`Bump detected in guild ${guildId}, channel ${message.channel.id}`);
+            
+            // Load reminders
+            const reminders = await loadReminders();
+            
+            // Check if this guild has a reminder configured
+            if (!reminders[guildId]) {
+              logger.info(`Bump detected in ${guildId}, but no reminder configured yet`);
+              return;
+            }
+            
+            // If reminder is active, reset the timer
+            if (reminders[guildId].active) {
+              // Update the channel ID to the current channel if needed
+              reminders[guildId].channelId = message.channel.id;
+              
+              // Save the updated reminder
+              await saveReminders(reminders);
+              
+              // Schedule the next reminder
+              await scheduleNextReminder(guildId, client, Date.now(), true);
+              
+              // Calculate time until next bump
+              const nextBumpTime = new Date(Date.now() + reminders[guildId].interval);
+              
+              // Format the time in a human-readable way (2 hours)
+              let timeUntilNextBump = '';
+              const hours = Math.floor(reminders[guildId].interval / (60 * 60 * 1000));
+              const minutes = Math.floor((reminders[guildId].interval % (60 * 60 * 1000)) / (60 * 1000));
+              
+              if (hours > 0) {
+                timeUntilNextBump += `${hours} hour${hours > 1 ? 's' : ''}`;
+              }
+              if (minutes > 0) {
+                timeUntilNextBump += `${hours > 0 ? ' and ' : ''}${minutes} minute${minutes > 1 ? 's' : ''}`;
+              }
+              
+              const confirmEmbed = new EmbedBuilder()
+                .setColor('#00FF00')
+                .setTitle('Bump Detected! ✅')
+                .setDescription(
+                  `Server bump successful! I'll remind you to bump again in **${timeUntilNextBump}**.\n` +
+                  `Next bump: <t:${Math.floor(nextBumpTime.getTime() / 1000)}:R>`
+                )
+                .setTimestamp();
+              
+              await message.channel.send({ embeds: [confirmEmbed] });
+              
+              logger.info(`Reset bump timer for guild ${guildId}, next reminder in ${timeUntilNextBump}`);
+            }
+          } catch (error) {
+            logger.error(`Error handling Disboard bump detection: ${error.message}`, error);
+            message.channel.send('Error processing bump. Please try again later.').catch(() => {});
+          }
+        }
+        
+        // Check for "Please wait" message (bump too soon)
+        const hasCooldownMessage = message.embeds.length > 0 && 
+          message.embeds[0].description && 
+          (/please wait/i.test(message.embeds[0].description) ||
+           /You can bump again/i.test(message.embeds[0].description));
+        
+        if (hasCooldownMessage) {
+          try {
+            // Extract the time from the message
+            const timeMatch = message.embeds[0].description.match(/(\d+) (hour|minute|second)s?/i);
+            if (timeMatch) {
+              const amount = parseInt(timeMatch[1]);
+              const unit = timeMatch[2].toLowerCase();
+              
+              let milliseconds = 0;
+              if (unit === 'hour') milliseconds = amount * 60 * 60 * 1000;
+              else if (unit === 'minute') milliseconds = amount * 60 * 1000;
+              else if (unit === 'second') milliseconds = amount * 1000;
+              
+              logger.info(`Bump cooldown detected: ${amount} ${unit}(s) remaining`);
+              
+              // Load reminders
               const reminders = await loadReminders();
-
-              if (!reminders[guildId]) {
-                logger.info(`Bump detected in ${guildId}, but no reminder configured yet`);
+              
+              // Check if this guild has a reminder configured
+              if (!reminders[guildId] || !reminders[guildId].active) {
                 return;
               }
-
-              if (reminders[guildId].active) {
-                reminders[guildId].lastSent = new Date().toISOString();
-                reminders[guildId].channelId = channelId;
-                await saveReminders(reminders);
-                await scheduleNextReminder(guildId, client, null, true);
-                logger.info(`Detected "Bump done!" in guild ${guildId}, reset reminder timer`);
+              
+              // Format the cooldown time
+              let cooldownTimeText = '';
+              if (unit === 'hour') {
+                cooldownTimeText = `${amount} hour${amount > 1 ? 's' : ''}`;
+              } else if (unit === 'minute') {
+                cooldownTimeText = `${amount} minute${amount > 1 ? 's' : ''}`;
+              } else if (unit === 'second') {
+                cooldownTimeText = `${amount} second${amount > 1 ? 's' : ''}`;
               }
-            } catch (error) {
-              logger.error('Error handling Disboard bump detection:', error.stack);
-              message.channel.send('Error processing bump. Check logs.').catch(() => {});
+              
+              // Schedule a reminder for when the cooldown expires
+              const cooldownEmbed = new EmbedBuilder()
+                .setColor('#FFA500')
+                .setTitle('Bump on Cooldown ⏳')
+                .setDescription(
+                  `The server was bumped too recently. I'll remind you when you can bump again in **${cooldownTimeText}**.\n` +
+                  `Next bump: <t:${Math.floor((Date.now() + milliseconds) / 1000)}:R>`
+                )
+                .setTimestamp();
+              
+              await message.channel.send({ embeds: [cooldownEmbed] });
+              
+              // Update the reminder to trigger after the cooldown
+              reminders[guildId].lastSent = Date.now() - reminders[guildId].interval + milliseconds;
+              await saveReminders(reminders);
+              
+              // Schedule the next reminder
+              await scheduleNextReminder(guildId, client, reminders[guildId].lastSent);
+              
+              logger.info(`Adjusted bump timer for guild ${guildId} due to cooldown`);
             }
+          } catch (error) {
+            logger.error(`Error handling Disboard cooldown: ${error.message}`, error);
           }
+        }
+      }
+
+      // Check if message is from Disboard bot
+      if (message.author.id === '302050872383242240') {  // Disboard bot ID
+        try {
+          const reminders = await loadReminders();
+          if (reminders[message.guild.id]?.active) {
+            // Schedule next reminder when any Disboard message is received
+            await scheduleNextReminder(message.guild.id, client, Date.now(), true);
+            logger.info(`Disboard message detected in guild ${message.guild.id}, timer started/reset`);
+          }
+        } catch (error) {
+          logger.error('Error handling Disboard message:', error);
         }
       }
     } catch (error) {

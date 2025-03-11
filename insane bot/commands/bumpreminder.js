@@ -207,6 +207,12 @@ module.exports = {
       await interaction.editReply({ embeds: [errorEmbed], ephemeral: true });
     }
   },
+  sendReminder,
+  scheduleNextReminder,
+  loadReminders,
+  saveReminders,
+  formatTimeUntil,
+  formatTimeAgo
 };
 
 function formatTimeUntil(milliseconds) {
@@ -332,7 +338,7 @@ async function sendReminder(guildId, client) {
     const reminder = reminders[guildId];
     
     if (!reminder || !reminder.active) {
-      logger.debug(`Skipping inactive reminder for guild ${guildId}`);
+      logger.info(`Skipping inactive reminder for guild ${guildId}`);
       return;
     }
 
@@ -398,6 +404,9 @@ async function sendReminder(guildId, client) {
       await saveReminders(reminders);
       
       logger.info(`Successfully sent reminder for guild ${guildId}`);
+      
+      // Schedule the next reminder
+      scheduleNextReminder(guildId, client, Date.now());
     } catch (error) {
       logger.error(`Failed to send reminder for guild ${guildId}:`, error);
       if (error.code === 50013) { // Missing Permissions
@@ -411,7 +420,7 @@ async function sendReminder(guildId, client) {
   }
 }
 
-async function scheduleNextReminder(guildId, client, startTime, fromBump = false) {
+async function scheduleNextReminder(guildId, client, startTime = null, fromBump = false) {
   try {
     const reminders = await retryOperation(() => loadReminders());
     const reminder = reminders[guildId];
@@ -421,16 +430,33 @@ async function scheduleNextReminder(guildId, client, startTime, fromBump = false
     const now = Date.now();
     reminder.lastActivity = now;
     
+    // If this is from a bump, update the lastSent time
     if (fromBump) {
-      reminder.lastSent = startTime;
+      logger.info(`Bump detected for guild ${guildId}, resetting timer`);
+      reminder.lastSent = now;
+      await saveReminders(reminders);
     }
-
-    const nextTime = startTime + reminder.interval;
+    
+    // Use provided startTime or lastSent time or current time
+    const baseTime = startTime || reminder.lastSent || now;
+    const nextTime = baseTime + reminder.interval;
     const delay = Math.max(0, nextTime - now);
 
+    // Clear any existing timeout for this guild
+    if (client.bumpTimeouts && client.bumpTimeouts[guildId]) {
+      clearTimeout(client.bumpTimeouts[guildId]);
+      logger.info(`Cleared existing timeout for guild ${guildId}`);
+    }
+    
+    // Initialize the timeouts object if it doesn't exist
+    if (!client.bumpTimeouts) {
+      client.bumpTimeouts = {};
+    }
+    
+    // Set the new timeout
     if (delay > 0) {
-      logger.info(`Scheduling next reminder for guild ${guildId} in ${formatTimeUntil(delay)}`);
-      setTimeout(() => sendReminder(guildId, client), delay);
+      logger.info(`Scheduling next reminder for guild ${guildId} in ${formatTimeUntil(delay)} (${new Date(now + delay).toISOString()})`);
+      client.bumpTimeouts[guildId] = setTimeout(() => sendReminder(guildId, client), delay);
     } else {
       logger.info(`Sending immediate reminder for guild ${guildId} (delay was ${delay}ms)`);
       sendReminder(guildId, client);

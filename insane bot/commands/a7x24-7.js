@@ -5,6 +5,7 @@ const SpotifyWebApi = require('spotify-web-api-node');
 const play = require('play-dl');
 const ytdl = require('@distube/ytdl-core');
 const logger = require('../utils/logger');
+const { formatDuration } = require('./play.js');
 
 // Album names for search
 const a7xAlbums = [
@@ -368,10 +369,10 @@ async function playSong(guildId, queue, channel, client) {
                 .setDescription(`[${song.title}](${song.url})`)
                 .addFields(
                     { name: 'Artist', value: song.author, inline: true },
-                    { name: 'Album', value: song.album, inline: true },
+                    { name: 'Album', value: song.album || 'Unknown', inline: true },
                     { name: 'Duration', value: formatDuration(song.duration), inline: true }
                 )
-                .setFooter({ text: `Requested by ${song.requestedBy}`, iconURL: song.requester.user.displayAvatarURL() });
+                .setFooter({ text: `Requested by ${song.requestedBy}`, iconURL: song.requester?.user?.displayAvatarURL() || null });
 
             channel.send({ embeds: [embed] }).catch(logger.error);
 
@@ -415,15 +416,18 @@ function cleanupQueue(guildId, client) {
     if (queue) {
         if (queue.connection) {
             queue.connection.destroy();
-            logger.info(`Bot left voice channel in guild ${guildId}`);
+        }
+        if (queue.player) {
+            queue.player.stop();
+        }
+        if (queue.liveProcess) {
+            try {
+                queue.liveProcess.kill('SIGTERM');
+            } catch (error) {
+                logger.error(`Failed to kill live process in guild ${guildId}:`, error);
+            }
         }
         client.queues.delete(guildId);
         logger.info(`Cleaned up queue for guild ${guildId}`);
     }
-}
-
-function formatDuration(seconds) {
-    const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = Math.floor(seconds % 60);
-    return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
 } 
