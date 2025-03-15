@@ -1,19 +1,29 @@
 require('dotenv').config();
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus, entersState } = require('@discordjs/voice');
-const ytdl = require('@distube/ytdl-core');
 const youtubedl = require('youtube-dl-exec');
 const ytSearch = require('yt-search');
 const SpotifyWebApi = require('spotify-web-api-node');
 const logger = require('../utils/logger');
 const { google } = require('googleapis');
+const fs = require('fs').promises;
+const path = require('path');
+
+const AUDIO_DIR = path.join(__dirname, 'audio_cache');
+
+async function ensureAudioDir() {
+  try {
+    await fs.mkdir(AUDIO_DIR, { recursive: true });
+  } catch (error) {
+    logger.error('Failed to create audio directory:', error);
+  }
+}
 
 const youtube = google.youtube({
   version: 'v3',
   auth: process.env.YOUTUBE_API_KEY
 });
 
-// Spotify URL patterns
 const SPOTIFY_PATTERNS = {
   TRACK: /^(?:https?:\/\/)?(?:open\.)?spotify\.com\/track\/([a-zA-Z0-9]+)(?:\?.*)?$/,
   ALBUM: /^(?:https?:\/\/)?(?:open\.)?spotify\.com\/album\/([a-zA-Z0-9]+)(?:\?.*)?$/,
@@ -21,6 +31,7 @@ const SPOTIFY_PATTERNS = {
 };
 
 async function execute(interaction, client) {
+  await ensureAudioDir();
   await interaction.deferReply();
 
   const guildId = interaction.guild.id;
@@ -45,6 +56,7 @@ async function execute(interaction, client) {
     repeatMode: 'off',
     liveProcess: null,
     isSkipping: false,
+    downloading: new Map(),
     effects: {
       bassboost: false,
       nightcore: false,
@@ -89,7 +101,7 @@ async function execute(interaction, client) {
       logger.music(`Joined voice channel in guild ${guildId}`);
     } catch (error) {
       logger.error(`Failed to join voice channel in guild ${guildId}:`, error);
-      return interaction.editReply({ content: 'Failed to join voice channel. Please try again.' });
+      return interaction.editReply({ content: 'Failed to join voice channel.' });
     }
   }
 
@@ -97,147 +109,55 @@ async function execute(interaction, client) {
     const query = interaction.options.getString('query');
     let songs = [];
 
-    // Check if it's a Spotify URL
     const spotifyTrackMatch = query.match(SPOTIFY_PATTERNS.TRACK);
     const spotifyAlbumMatch = query.match(SPOTIFY_PATTERNS.ALBUM);
     const spotifyPlaylistMatch = query.match(SPOTIFY_PATTERNS.PLAYLIST);
 
     if (spotifyTrackMatch || spotifyAlbumMatch || spotifyPlaylistMatch) {
-      try {
-        // Initialize Spotify API client
-        const spotifyApi = new SpotifyWebApi({
-          clientId: process.env.SPOTIFY_CLIENT_ID,
-          clientSecret: process.env.SPOTIFY_CLIENT_SECRET
-        });
+      const spotifyApi = new SpotifyWebApi({
+        clientId: process.env.SPOTIFY_CLIENT_ID,
+        clientSecret: process.env.SPOTIFY_CLIENT_SECRET
+      });
 
-        // Get access token
-        const data = await spotifyApi.clientCredentialsGrant();
-        spotifyApi.setAccessToken(data.body['access_token']);
+      const data = await spotifyApi.clientCredentialsGrant();
+      spotifyApi.setAccessToken(data.body['access_token']);
 
-        if (spotifyTrackMatch) {
-          // Handle single track
-          const trackId = spotifyTrackMatch[1];
-          const track = await spotifyApi.getTrack(trackId);
-          songs.push({
-            title: track.body.name,
-            author: track.body.artists.map(artist => artist.name).join(', '),
-            duration: track.body.duration_ms / 1000,
-            thumbnail: track.body.album.images[0]?.url,
-            isLive: false,
-            requestedBy: interaction.user.tag,
-            spotifyTrack: track.body
-          });
-        } else if (spotifyAlbumMatch) {
-          // Handle album
-          const albumId = spotifyAlbumMatch[1];
-          const album = await spotifyApi.getAlbum(albumId);
-          songs = album.body.tracks.items.map(track => ({
-            title: track.name,
-            author: track.artists.map(artist => artist.name).join(', '),
-            duration: track.duration_ms / 1000,
-            thumbnail: album.body.images[0]?.url,
-            isLive: false,
-            requestedBy: interaction.user.tag,
-            spotifyTrack: track
-          }));
-        } else if (spotifyPlaylistMatch) {
-          // Handle playlist
-          const playlistId = spotifyPlaylistMatch[1];
-          const playlist = await spotifyApi.getPlaylist(playlistId);
-          songs = playlist.body.tracks.items
-            .filter(item => item.track) // Filter out null tracks
-            .map(item => ({
-              title: item.track.name,
-              author: item.track.artists.map(artist => artist.name).join(', '),
-              duration: item.track.duration_ms / 1000,
-              thumbnail: item.track.album.images[0]?.url,
-              isLive: false,
-              requestedBy: interaction.user.tag,
-              spotifyTrack: item.track
-            }));
-        }
-
-        // Add songs to queue
-        queue.songs.push(...songs);
-        client.queues.set(guildId, queue);
-
-        const embed = new EmbedBuilder()
-          .setColor('#1DB954')
-          .setTitle(spotifyTrackMatch ? '🎵 Added to Queue' : '📑 Added Playlist to Queue')
-          .setDescription(`Added ${songs.length} song${songs.length === 1 ? '' : 's'} to the queue from Spotify`)
-          .addFields(
-            { name: 'First Track', value: songs[0].title, inline: true },
-            { name: 'Artist', value: songs[0].author, inline: true },
-            { name: 'Total Duration', value: formatDuration(songs.reduce((acc, song) => acc + song.duration, 0)), inline: true }
-          )
-          .setThumbnail(songs[0].thumbnail)
-          .setTimestamp();
-
-        await interaction.editReply({ embeds: [embed] });
-
-        if (!queue.playing) {
-          logger.music(`Starting playback for guild ${guildId}`);
-          await playSong(guildId, queue, channel, client);
-        }
-        return;
-      } catch (error) {
-        logger.error(`Spotify API error in guild ${guildId}:`, error);
-        throw new Error('Failed to process Spotify link. Please try again later.');
+      if (spotifyTrackMatch) {
+        const trackId = spotifyTrackMatch[1];
+        const track = await spotifyApi.getTrack(trackId);
+        songs.push(await prepareSongFromSpotify(track.body, interaction.user.tag));
+      } else if (spotifyAlbumMatch) {
+        const albumId = spotifyAlbumMatch[1];
+        const album = await spotifyApi.getAlbum(albumId);
+        songs = await Promise.all(album.body.tracks.items.map(track => 
+          prepareSongFromSpotify(track, interaction.user.tag)));
+      } else if (spotifyPlaylistMatch) {
+        const playlistId = spotifyPlaylistMatch[1];
+        const playlist = await spotifyApi.getPlaylist(playlistId);
+        songs = await Promise.all(playlist.body.tracks.items
+          .filter(item => item.track)
+          .map(item => prepareSongFromSpotify(item.track, interaction.user.tag)));
       }
-    }
-
-    // Handle YouTube URL or search
-    if (ytdl.validateURL(query)) {
-      try {
-        const videoId = extractVideoId(query);
+    } else {
+      const videoId = extractVideoId(query);
+      if (videoId) {
         const response = await youtube.videos.list({
           part: 'snippet,contentDetails,liveStreamingDetails',
           id: videoId
         });
         const video = response.data.items[0];
         if (!video) throw new Error('Video not found');
-
-        const isLive = !!video.liveStreamingDetails;
-        logger.music(`Video "${video.snippet.title}" isLive: ${isLive} in guild ${guildId}`);
-
-        songs = [{
-          title: video.snippet.title,
-          url: `https://www.youtube.com/watch?v=${videoId}`,
-          duration: isLive ? Infinity : parseDuration(video.contentDetails.duration),
-          author: video.snippet.channelTitle,
-          thumbnail: video.snippet.thumbnails.default?.url || null,
-          isLive: isLive,
-          requestedBy: interaction.user.tag
-        }];
-      } catch (error) {
-        logger.error(`Failed to fetch video info in guild ${guildId}:`, error);
-        throw new Error('Failed to fetch video information. Please try again.');
-      }
-    } else {
-      try {
-        logger.music(`Searching for: "${query}" in guild ${guildId}`);
+        songs = [await prepareSongFromYouTube(video, interaction.user.tag, query)];
+      } else {
         const result = await ytSearch(query);
         if (!result.videos.length) throw new Error('No results found');
-        
-        songs = [{
-          title: result.videos[0].title,
-          url: result.videos[0].url,
-          duration: result.videos[0].duration.seconds,
-          author: result.videos[0].author.name,
-          thumbnail: result.videos[0].thumbnail,
-          isLive: false,
-          requestedBy: interaction.user.tag
-        }];
-      } catch (error) {
-        logger.error(`Search failed in guild ${guildId}:`, error);
-        throw new Error('Failed to search for the song. Please try again.');
+        songs = [await prepareSongFromYouTubeSearch(result.videos[0], interaction.user.tag)];
       }
     }
 
-    // Add songs to queue
     queue.songs.push(...songs);
     client.queues.set(guildId, queue);
-    logger.music(`Added ${songs[0].isLive ? 'live stream' : 'song'} "${songs[0].title}" to queue in guild ${guildId} by ${songs[0].requestedBy}`);
+    startDownloadQueue(guildId, queue, client);
 
     const embed = new EmbedBuilder()
       .setColor(songs[0].isLive ? '#FF0000' : '#00FFFF')
@@ -250,7 +170,7 @@ async function execute(interaction, client) {
         { name: 'Requested By', value: songs[0].requestedBy, inline: true }
       )
       .setTimestamp();
-    
+
     await interaction.editReply({ embeds: [embed] });
 
     if (!queue.playing) {
@@ -260,11 +180,129 @@ async function execute(interaction, client) {
 
   } catch (error) {
     logger.error(`Play command error in guild ${guildId}:`, error);
-    await interaction.editReply({ 
-      content: `Failed to play: ${error.message || 'An unexpected error occurred'}. Please try again.`,
-      ephemeral: true 
-    });
+    await interaction.editReply({ content: `Failed to play: ${error.message || 'An unexpected error occurred'}` });
   }
+}
+
+async function prepareSongFromSpotify(track, requestedBy) {
+  const searchQuery = `${track.name} ${track.artists[0].name}`;
+  const result = await ytSearch(searchQuery);
+  if (!result.videos.length) throw new Error(`No YouTube match for ${track.name}`);
+  
+  return {
+    title: track.name,
+    author: track.artists.map(artist => artist.name).join(', '),
+    duration: track.duration_ms / 1000,
+    thumbnail: track.album.images[0]?.url,
+    isLive: false,
+    requestedBy,
+    url: result.videos[0].url,
+    filePath: null
+  };
+}
+
+async function prepareSongFromYouTube(video, requestedBy, url) {
+  return {
+    title: video.snippet.title,
+    url: url,
+    duration: video.liveStreamingDetails ? Infinity : parseDuration(video.contentDetails.duration),
+    author: video.snippet.channelTitle,
+    thumbnail: video.snippet.thumbnails.default?.url,
+    isLive: !!video.liveStreamingDetails,
+    requestedBy,
+    filePath: null
+  };
+}
+
+async function prepareSongFromYouTubeSearch(video, requestedBy) {
+  return {
+    title: video.title,
+    url: video.url,
+    duration: video.duration.seconds,
+    author: video.author.name,
+    thumbnail: video.thumbnail,
+    isLive: false,
+    requestedBy,
+    filePath: null
+  };
+}
+
+async function downloadSong(song, guildId, queue, client) {
+  if (song.isLive) return Promise.resolve();
+  
+  const videoId = extractVideoId(song.url);
+  const filePath = path.join(AUDIO_DIR, `${videoId}.mp3`);
+  
+  // Check if file already exists on disk
+  if (await fs.access(filePath).then(() => true).catch(() => false)) {
+    song.filePath = filePath;
+    logger.music(`Reusing existing file "${song.title}" at ${filePath} for guild ${guildId}`);
+    return Promise.resolve();
+  }
+  
+  // If filePath is already set and exists, reuse it
+  if (song.filePath && (await fs.access(song.filePath).then(() => true).catch(() => false))) {
+    logger.music(`Reusing previously set file "${song.title}" at ${song.filePath} for guild ${guildId}`);
+    return Promise.resolve();
+  }
+
+  if (!queue) return Promise.reject(new Error('Queue not found'));
+
+  if (queue.downloading.has(videoId)) {
+    return queue.downloading.get(videoId);
+  }
+
+  const downloadPromise = (async () => {
+    try {
+      logger.music(`Starting download of "${song.title}" for guild ${guildId}`);
+      
+      const downloadProcess = youtubedl.exec(song.url, {
+        format: 'bestaudio',
+        output: filePath,
+        audioFormat: 'mp3',
+        verbose: true
+      });
+
+      let errorOutput = '';
+      downloadProcess.stderr.on('data', (data) => {
+        errorOutput += data.toString();
+      });
+
+      await downloadProcess;
+      await fs.access(filePath);
+      
+      song.filePath = filePath;
+      logger.music(`Downloaded "${song.title}" to ${filePath} for guild ${guildId}`);
+      
+      queue.downloading.delete(videoId);
+      client.queues.set(guildId, queue);
+    } catch (error) {
+      logger.error(`Failed to download "${song.title}" for guild ${guildId}:`, {
+        error: error.message,
+        stack: error.stack,
+        url: song.url,
+        output: errorOutput || 'No additional output'
+      });
+      song.filePath = null;
+      throw new Error(`Download failed: ${error.message}`);
+    }
+  })();
+
+  queue.downloading.set(videoId, downloadPromise);
+  client.queues.set(guildId, queue);
+  return downloadPromise;
+}
+
+function startDownloadQueue(guildId, queue, client) {
+  if (!queue) return;
+
+  queue.songs.forEach(song => {
+    if (!song.filePath && !song.isLive) {
+      downloadSong(song, guildId, queue, client).catch(err => {
+        logger.error(`Background download failed for "${song.title}" in guild ${guildId}:`, err);
+      });
+    }
+  });
 }
 
 async function playSong(guildId, queue, channel, client) {
@@ -278,159 +316,29 @@ async function playSong(guildId, queue, channel, client) {
   
   try {
     let stream;
-    
-    // Handle Spotify tracks by searching YouTube
-    if (song.spotifyTrack) {
-      try {
-        const searchQuery = `${song.title} ${song.author}`;
-        logger.music(`Searching YouTube for Spotify track: "${searchQuery}" in guild ${guildId}`);
-        
-        const result = await ytSearch(searchQuery);
-        if (!result.videos.length) {
-          throw new Error(`No YouTube results found for "${searchQuery}"`);
-        }
-        
-        song.url = result.videos[0].url;
-        logger.music(`Found YouTube match: "${result.videos[0].title}" for Spotify track in guild ${guildId}`);
-      } catch (error) {
-        logger.error(`Failed to find YouTube match for Spotify track in guild ${guildId}:`, error);
-        skipSong(guildId, queue, channel, client);
-        return;
-      }
-    }
 
-    // Validate URL before attempting to stream
-    if (!song.url || !ytdl.validateURL(song.url)) {
-      logger.error(`Invalid YouTube URL for "${song.title}" in guild ${guildId}`);
-      skipSong(guildId, queue, channel, client);
-      return;
-    }
-
-    if (song.isLive) {
-      // Handle live streams differently
-      try {
-        const process = youtubedl.exec(song.url, {
-          format: 'best',
-          output: '-',
-          quiet: true
-        });
-        stream = process.stdout;
-        queue.liveProcess = process;
-      } catch (error) {
-        logger.error(`Failed to start live stream in guild ${guildId}:`, error);
-        skipSong(guildId, queue, channel, client);
-        return;
+    if (!song.isLive) {
+      if (!song.filePath) {
+        logger.music(`Waiting for download of "${song.title}" in guild ${guildId}`);
+        await downloadSong(song, guildId, queue, client);
       }
+      if (!song.filePath || !(await fs.access(song.filePath).then(() => true).catch(() => false))) {
+        throw new Error('Failed to download song or file not found');
+      }
+      stream = song.filePath;
     } else {
-      // Handle regular videos
-      try {
-        // First attempt with ytdl-core
-        try {
-          stream = ytdl(song.url, {
-            filter: 'audioonly',
-            quality: 'highestaudio',
-            highWaterMark: 1 << 25, // 32MB buffer
-            requestOptions: {
-              headers: {
-                Cookie: process.env.YOUTUBE_COOKIE || '',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Accept-Language': 'en-US,en;q=0.9'
-              }
-            }
-          });
-
-          // Set up error handler for the stream
-          stream.on('error', async (error) => {
-            logger.error(`Stream error for "${song.title}" in guild ${guildId}:`, error);
-            
-            // If it's a 403 error, try the fallback method
-            if (error.message.includes('403') || error.message.includes('Status code: 403')) {
-              logger.info(`Attempting fallback streaming method for "${song.title}" in guild ${guildId}`);
-              
-              try {
-                // Try using youtube-dl as a fallback
-                const process = youtubedl.exec(song.url, {
-                  format: 'bestaudio/best',
-                  output: '-',
-                  quiet: true,
-                  limitRate: '1M'
-                });
-                
-                if (queue.player) {
-                  const fallbackResource = createAudioResource(process.stdout, {
-                    inlineVolume: true,
-                    inputType: 'raw'
-                  });
-                  
-                  fallbackResource.volume?.setVolume(queue.volume);
-                  queue.player.play(fallbackResource);
-                  
-                  // Update queue with the process for cleanup
-                  queue.liveProcess = process;
-                  client.queues.set(guildId, queue);
-                  
-                  logger.info(`Successfully switched to fallback streaming for "${song.title}" in guild ${guildId}`);
-                  
-                  // Send message to channel about the fallback
-                  if (channel) {
-                    channel.send({
-                      content: `⚠️ Encountered streaming issues with "${song.title}". Switched to alternative streaming method.`
-                    }).catch(err => logger.error(`Failed to send fallback message: ${err.message}`));
-                  }
-                  
-                  return; // Successfully switched to fallback
-                }
-              } catch (fallbackError) {
-                logger.error(`Fallback streaming method failed for "${song.title}" in guild ${guildId}:`, fallbackError);
-                // If fallback fails, skip the song
-                skipSong(guildId, queue, channel, client);
-                return;
-              }
-            } else {
-              // For other errors, skip the song
-              skipSong(guildId, queue, channel, client);
-            }
-          });
-        } catch (ytdlError) {
-          logger.error(`Failed to create ytdl stream for "${song.title}" in guild ${guildId}:`, ytdlError);
-          
-          // Try youtube-dl directly as fallback
-          try {
-            logger.info(`Attempting youtube-dl fallback for "${song.title}" in guild ${guildId}`);
-            const process = youtubedl.exec(song.url, {
-              format: 'bestaudio/best',
-              output: '-',
-              quiet: true,
-              limitRate: '1M'
-            });
-            
-            stream = process.stdout;
-            queue.liveProcess = process;
-            
-            logger.info(`Successfully created youtube-dl stream for "${song.title}" in guild ${guildId}`);
-            
-            // Send message to channel about the fallback
-            if (channel) {
-              channel.send({
-                content: `⚠️ Using alternative streaming method for "${song.title}".`
-              }).catch(err => logger.error(`Failed to send fallback message: ${err.message}`));
-            }
-          } catch (fallbackError) {
-            logger.error(`All streaming methods failed for "${song.title}" in guild ${guildId}:`, fallbackError);
-            skipSong(guildId, queue, channel, client);
-            return;
-          }
-        }
-      } catch (error) {
-        logger.error(`Failed to create stream for "${song.title}" in guild ${guildId}:`, error);
-        skipSong(guildId, queue, channel, client);
-        return;
-      }
+      const process = youtubedl.exec(song.url, {
+        format: 'bestaudio',
+        output: '-',
+        quiet: true
+      });
+      stream = process.stdout;
+      queue.liveProcess = process;
     }
 
     const resource = createAudioResource(stream, {
       inlineVolume: true,
-      inputType: song.isLive ? 'raw' : 'webm/opus'
+      inputType: song.isLive ? 'raw' : 'mp3'
     });
 
     resource.volume?.setVolume(queue.volume);
@@ -443,40 +351,24 @@ async function playSong(guildId, queue, channel, client) {
 
     queue.player.play(resource);
     queue.playing = true;
-
-    // Update queue in client
     client.queues.set(guildId, queue);
 
-    // Send now playing message
     const embed = new EmbedBuilder()
       .setColor(song.isLive ? '#FF0000' : '#00FFFF')
       .setTitle(song.isLive ? '🔴 Now Streaming' : '🎵 Now Playing')
       .setDescription(`**${song.title}**${song.author ? ` by ${song.author}` : ''}`)
       .addFields(
-        { 
-          name: song.isLive ? 'Type' : 'Duration', 
-          value: song.isLive ? 'LIVE' : formatDuration(song.duration), 
-          inline: true 
-        },
-        { 
-          name: 'Requested By', 
-          value: song.requestedBy, 
-          inline: true 
-        }
+        { name: song.isLive ? 'Type' : 'Duration', value: song.isLive ? 'LIVE' : formatDuration(song.duration), inline: true },
+        { name: 'Requested By', value: song.requestedBy, inline: true },
+        { name: 'Volume', value: `${Math.round(queue.volume * 100)}%`, inline: true }
       );
 
-    if (song.thumbnail) {
-      embed.setThumbnail(song.thumbnail);
-    }
-
-    if (channel) {
-      channel.send({ embeds: [embed] }).catch(error => {
-        logger.error(`Failed to send now playing message in guild ${guildId}:`, error);
-      });
-    }
+    if (song.thumbnail) embed.setThumbnail(song.thumbnail);
+    if (channel) await channel.send({ embeds: [embed] });
 
   } catch (error) {
-    logger.error(`Failed to play song "${song.title}" in guild ${guildId}:`, error);
+    logger.error(`Failed to play "${song.title}" in guild ${guildId}:`, error);
+    await channel.send({ content: `Failed to play "${song.title}": ${error.message}. Skipping...` });
     skipSong(guildId, queue, channel, client);
   }
 }
@@ -496,237 +388,129 @@ function setupPlayerListeners(guildId, queue, channel, client) {
 
     const finishedSong = queue.songs[0];
     
-    // Handle repeat modes
     if (queue.repeatMode === 'song') {
-      // Keep the current song and replay it
       logger.info(`Repeating song "${finishedSong.title}" in guild ${guildId}`);
       await playSong(guildId, queue, channel, client);
       return;
     } else if (queue.repeatMode === 'queue' && queue.songs.length > 0) {
-      // Move the finished song to the end of the queue
       queue.songs.shift();
       if (finishedSong) {
         queue.songs.push(finishedSong);
         logger.info(`Moving "${finishedSong.title}" to end of queue in guild ${guildId} (queue repeat mode)`);
       }
     } else {
-      // Normal mode - remove the finished song
       queue.songs.shift();
     }
 
-    // Add to history if it exists
-    if (finishedSong) {
+    if (finishedSong && !finishedSong.isLive) {
       queue.history.push(finishedSong);
-      // Keep history limited to last 50 songs
-      if (queue.history.length > 50) {
-        queue.history.shift();
-      }
+      if (queue.history.length > 50) queue.history.shift();
     }
 
     client.queues.set(guildId, queue);
     await playSong(guildId, queue, channel, client);
   });
 
-  queue.player.on('error', async (err) => {
-    const song = queue.songs[0] || { title: 'Unknown' };
-    logger.error(`Player error for "${song.title}" in guild ${guildId}:`, err.message);
-    
-    // Check if it's a 403 error
-    if (err.message.includes('403') || err.message.includes('Status code: 403')) {
-      logger.info(`Attempting to recover from 403 error for "${song.title}" in guild ${guildId}`);
-      
-      try {
-        // Try using youtube-dl as a fallback
-        const process = youtubedl.exec(song.url, {
-          format: 'bestaudio/best',
-          output: '-',
-          quiet: true,
-          limitRate: '1M'
-        });
-        
-        const fallbackResource = createAudioResource(process.stdout, {
-          inlineVolume: true,
-          inputType: 'raw'
-        });
-        
-        fallbackResource.volume?.setVolume(queue.volume);
-        
-        // Update queue with the process for cleanup
-        queue.liveProcess = process;
-        client.queues.set(guildId, queue);
-        
-        // Play with the fallback resource
-        queue.player.play(fallbackResource);
-        
-        logger.info(`Successfully recovered from 403 error for "${song.title}" in guild ${guildId}`);
-        
-        // Send message to channel about the recovery
-        if (channel) {
-          channel.send({
-            content: `⚠️ Encountered streaming issues with "${song.title}". Switched to alternative streaming method.`
-          }).catch(err => logger.error(`Failed to send recovery message: ${err.message}`));
-        }
-        
-        return; // Successfully recovered
-      } catch (fallbackError) {
-        logger.error(`Failed to recover from 403 error for "${song.title}" in guild ${guildId}:`, fallbackError);
-        // If recovery fails, skip the song
-        if (!queue.isSkipping) {
-          channel.send({ content: `Failed to play "${song.title}" due to streaming restrictions. Skipping...` });
-          skipSong(guildId, queue, channel, client);
-        }
-      }
-    } else {
-      // For other errors, skip the song
-      if (!queue.isSkipping) {
-        channel.send({ content: `Player error: ${err.message}, skipping...` });
-        skipSong(guildId, queue, channel, client);
-      }
-    }
+  queue.player.on('error', (error) => {
+    logger.error(`Player error in guild ${guildId}:`, error);
+    skipSong(guildId, queue, channel, client);
   });
 }
 
 function skipSong(guildId, queue, channel, client) {
-  try {
-    if (!queue) {
-      logger.warn(`Attempted to skip song in non-existent queue for guild ${guildId}`);
-      return;
+  if (!queue) return;
+  
+  queue.isSkipping = true;
+  
+  if (queue.player) queue.player.stop();
+  
+  if (queue.liveProcess) {
+    try {
+      queue.liveProcess.kill('SIGTERM');
+    } catch (error) {
+      logger.error(`Failed to kill live process in guild ${guildId}:`, error);
     }
-
-    queue.isSkipping = true;
-
-    // Stop current playback
-    if (queue.player) {
-      queue.player.stop();
-    }
-
-    // Kill any live stream process
-    if (queue.liveProcess) {
-      try {
-        queue.liveProcess.kill('SIGTERM');
-      } catch (error) {
-        logger.error(`Failed to kill live process in guild ${guildId}:`, error);
-      }
-      queue.liveProcess = null;
-    }
-
-    // Remove current song and add to history if not live
-    const skippedSong = queue.songs.shift();
-    if (skippedSong && !skippedSong.isLive) {
-      if (!queue.history) queue.history = [];
-      queue.history = [skippedSong, ...queue.history].slice(0, 50); // Keep last 50 songs
-    }
-
-    // Update queue in client
-    client.queues.set(guildId, queue);
-
-    // If there are more songs, play the next one
-    if (queue.songs.length > 0) {
-      logger.music(`Skipping to next song in guild ${guildId}`);
-      playSong(guildId, queue, channel, client);
-    } else {
-      logger.music(`No more songs in queue after skip in guild ${guildId}`);
-      cleanupQueue(guildId, client);
-    }
-  } catch (error) {
-    logger.error(`Error in skipSong for guild ${guildId}:`, error);
-    // Try to clean up anyway
-    cleanupQueue(guildId, client);
-  } finally {
-    queue.isSkipping = false;
+    queue.liveProcess = null;
   }
+
+  const skippedSong = queue.songs.shift();
+  if (skippedSong && !skippedSong.isLive) {
+    queue.history = [skippedSong, ...queue.history].slice(0, 50);
+  }
+
+  client.queues.set(guildId, queue);
+  
+  if (queue.songs.length > 0) {
+    playSong(guildId, queue, channel, client);
+  } else {
+    cleanupQueue(guildId, client);
+  }
+  
+  queue.isSkipping = false;
 }
 
-function cleanupQueue(guildId, client) {
-  try {
-    const queue = client.queues.get(guildId);
-    if (!queue) return;
+async function cleanupQueue(guildId, client) {
+  const queue = client.queues.get(guildId);
+  if (!queue) return;
 
-    // Stop playback
-    if (queue.player) {
-      queue.player.stop();
-      queue.player = null;
-    }
-
-    // Kill any live stream process
-    if (queue.liveProcess) {
-      try {
-        queue.liveProcess.kill('SIGTERM');
-      } catch (error) {
-        logger.error(`Failed to kill live process during cleanup in guild ${guildId}:`, error);
-      }
-      queue.liveProcess = null;
-    }
-
-    // Destroy connection
-    if (queue.connection) {
-      try {
-        queue.connection.destroy();
-      } catch (error) {
-        logger.error(`Failed to destroy connection in guild ${guildId}:`, error);
-      }
-    }
-
-    // Clear queue
-    queue.songs = [];
-    queue.playing = false;
-    queue.isSkipping = false;
-
-    // Remove from client queues
-    client.queues.delete(guildId);
-    
-    logger.music(`Cleaned up queue for guild ${guildId}`);
-  } catch (error) {
-    logger.error(`Error in cleanupQueue for guild ${guildId}:`, error);
+  if (queue.player) {
+    queue.player.stop();
+    queue.player = null;
   }
+
+  if (queue.liveProcess) {
+    try {
+      queue.liveProcess.kill('SIGTERM');
+    } catch (error) {
+      logger.error(`Failed to kill live process during cleanup in guild ${guildId}:`, error);
+    }
+    queue.liveProcess = null;
+  }
+
+  if (queue.connection && queue.connection.state.status !== VoiceConnectionStatus.Destroyed) {
+    try {
+      queue.connection.destroy();
+    } catch (error) {
+      logger.error(`Failed to destroy connection in guild ${guildId}:`, error);
+    }
+  }
+
+  // Files are no longer deleted here - they persist in AUDIO_DIR
+  client.queues.delete(guildId);
+  logger.music(`Cleaned up queue for guild ${guildId} (audio files retained)`);
 }
 
 function formatDuration(seconds) {
   if (!seconds || isNaN(seconds)) return 'Unknown';
   if (seconds === Infinity) return 'LIVE';
-  
-  // Ensure seconds is a number and round to nearest integer
   seconds = Math.round(Number(seconds));
-  
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const secs = seconds % 60;
-  
-  // Format with leading zeros
-  const formattedMinutes = minutes.toString().padStart(2, '0');
-  const formattedSeconds = secs.toString().padStart(2, '0');
-  
-  // Only include hours if there are any
-  if (hours > 0) {
-    return `${hours}:${formattedMinutes}:${formattedSeconds}`;
-  } else {
-    return `${minutes}:${formattedSeconds}`;
-  }
+  return hours > 0 
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+    : `${minutes}:${String(secs).padStart(2, '0')}`;
 }
 
 function extractVideoId(url) {
   const regExp = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
-  const match = url.match(regExp);
-  return match ? match[1] : null;
+  return url.match(regExp)?.[1] || null;
 }
 
 function parseDuration(duration) {
   const regExp = /PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/;
   const matches = duration.match(regExp);
   if (!matches) return 0;
-  const hours = parseInt(matches[1] || 0);
-  const minutes = parseInt(matches[2] || 0);
-  const seconds = parseInt(matches[3] || 0);
-  return hours * 3600 + minutes * 60 + seconds;
+  return parseInt(matches[1] || 0) * 3600 + parseInt(matches[2] || 0) * 60 + parseInt(matches[3] || 0);
 }
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('play')
-    .setDescription('Play a song or 24/7 live stream from YouTube.')
+    .setDescription('Play a song from YouTube or Spotify.')
     .addStringOption(option => 
       option.setName('query')
-        .setDescription('YouTube URL or search term (supports live streams)')
+        .setDescription('YouTube URL, Spotify URL, or search term')
         .setRequired(true)),
   cooldown: 5,
   execute,

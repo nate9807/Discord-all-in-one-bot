@@ -1,0 +1,21 @@
+{
+    "name": "sabaton-bot",
+    "version": "1.0.0",
+    "description": "A Discord bot that plays Sabaton music 24/7",
+    "main": "index.js",
+    "scripts": {
+        "start": "node index.js"
+    },
+    "dependencies": {
+        "@discordjs/opus": "github:discordjs/opus",
+        "@discordjs/voice": "^0.17.0",
+        "discord.js": "^14.15.3",
+        "dotenv": "^16.4.5",
+        "googleapis": "^146.0.0",
+        "libsodium-wrappers": "^0.7.15",
+        "spotify-web-api-node": "^5.0.2",
+        "winston": "^3.15.0",
+        "youtube-dl-exec": "^3.0.6",
+        "yt-search": "^2.12.1"
+    }
+}
